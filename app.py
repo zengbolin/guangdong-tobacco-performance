@@ -82,6 +82,13 @@ st.markdown("""
         border: 1px solid #e2e8f0;
         margin: 0.5rem 0;
     }
+    .real-time-score {
+        background: linear-gradient(90deg, #e0e7ff 0%, #c7d2fe 100%);
+        border-radius: 10px;
+        padding: 1rem;
+        border: 2px solid #4f46e5;
+        margin: 1rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -102,6 +109,8 @@ if 'current_quarter' not in st.session_state:
     st.session_state.current_quarter = None
 if 'last_reset' not in st.session_state:
     st.session_state.last_reset = None
+if 'staff_realtime_score' not in st.session_state:
+    st.session_state.staff_realtime_score = {}
 
 # ========== 季度管理函数 ==========
 def get_current_quarter():
@@ -285,6 +294,42 @@ def calculate_quarter_average(monthly_data, quarter):
         avg_monthly = sum(valid_data) / len(valid_data)
         return avg_monthly * 3
 
+def calculate_realtime_score_for_staff(dist_values, recycle_values, core_customers, comp_score, quarter, target_grade=6):
+    """为事务员计算实时得分"""
+    # 计算季度平均值
+    dist_avg = calculate_quarter_average(dist_values, quarter)
+    recycle_avg = calculate_quarter_average(recycle_values, quarter)
+    
+    # 计算各项得分
+    dist_score = calculate_distribution_score(dist_avg)
+    recycle_score = calculate_recycling_score(recycle_avg)
+    core_score = calculate_core_customer_score(core_customers)
+    
+    # 限制综合评分为0-20
+    comp_score = min(20, max(0, comp_score))
+    
+    # 总分和档位
+    total_score = dist_score + recycle_score + core_score + comp_score
+    grade, salary = calculate_salary_grade(total_score)
+    
+    # 检查档位提醒
+    warning_level, warning_msg = check_grade_warning(grade, target_grade)
+    
+    return {
+        '分销均季度': round(dist_avg, 1),
+        '条盒均季度': round(recycle_avg, 1),
+        '分销得分': dist_score,
+        '条盒回收得分': recycle_score,
+        '核心户得分': core_score,
+        '综合得分': comp_score,
+        '总分': total_score,
+        '档位': grade,
+        '预估月薪': salary,
+        '档位提醒级别': warning_level,
+        '档位提醒信息': warning_msg,
+        '是否达标': grade <= target_grade
+    }
+
 # ========== 数据初始化 ==========
 def init_data_from_template():
     """从模板初始化数据"""
@@ -328,9 +373,6 @@ def init_data_from_template():
 
 def calculate_performance(df, quarter):
     """根据季度计算绩效"""
-    results = []
-    quarter_months = get_quarter_months(quarter)
-    
     # 确定月份范围
     if "Q1" in quarter:
         month_range = [1, 2, 3]
@@ -499,13 +541,14 @@ def login_page():
         2. 每季度结束后数据自动重置
         3. 系统会记录每个季度的历史数据
         
-        **🎯 档位提醒系统：**
+        **🎯 实时评分系统：**
+        - 事务员填写数据时，实时显示预估得分和档位
         - 绿色✅：超过目标档位
         - 黄色📊：达到目标档位  
         - 红色⚠️：低于目标档位（需要改进）
         
         **👤 各角色功能：**
-        - 事务员：填报月度数据，查看季度成绩和提醒
+        - 事务员：填报月度数据，实时查看预估成绩和提醒
         - 地市经理：查看本地区数据，进行综合评分
         - 管理员：季度管理、数据重置、系统设置
         
@@ -535,14 +578,14 @@ def staff_dashboard():
     
     user_row = user_data.iloc[0]
     
-    # 档位提醒
-    if '档位提醒级别' in user_row and '档位提醒信息' in user_row:
-        st.markdown(f'<div class="{user_row["档位提醒级别"]}-card">{user_row["档位提醒信息"]}</div>', unsafe_allow_html=True)
-    
     # 创建标签页
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 季度绩效", "📝 数据填报", "🧮 得分计算器", "📈 历史季度"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 季度绩效", "📝 实时数据填报", "🧮 得分计算器", "📈 历史季度"])
     
     with tab1:
+        # 档位提醒
+        if '档位提醒级别' in user_row and '档位提醒信息' in user_row:
+            st.markdown(f'<div class="{user_row["档位提醒级别"]}-card">{user_row["档位提醒信息"]}</div>', unsafe_allow_html=True)
+        
         # 季度绩效总览
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -611,16 +654,77 @@ def staff_dashboard():
                     st.write("各项表现均衡，继续保持！")
     
     with tab2:
-        st.subheader(f"📅 {st.session_state.current_quarter} 数据填报")
+        st.subheader(f"📅 {st.session_state.current_quarter} 实时数据填报")
         
         # 获取季度月份
         quarter_months = get_quarter_months(st.session_state.current_quarter)
         
-        with st.form("monthly_data_form"):
+        # 初始化表单数据
+        dist_values = []
+        recycle_values = []
+        
+        # 获取当前数据
+        for month in quarter_months:
+            month_num = int(month.replace('月', ''))
+            dist_col = f'分销_{month_num}月'
+            recycle_col = f'条盒_{month_num}月'
+            
+            dist_values.append(user_row[dist_col] if dist_col in user_row else 0)
+            recycle_values.append(user_row[recycle_col] if recycle_col in user_row else 0)
+        
+        core_customers = user_row['核心户数'] if '核心户数' in user_row else 0
+        target_grade = user_row['季度目标档位'] if '季度目标档位' in user_row else 6
+        comp_score = user_row['综合评分'] if '综合评分' in user_row else 0
+        
+        # 实时计算当前得分
+        current_score = calculate_realtime_score_for_staff(
+            dist_values, recycle_values, core_customers, comp_score,
+            st.session_state.current_quarter, target_grade
+        )
+        
+        # 显示实时评分卡片
+        st.markdown('<div class="real-time-score">', unsafe_allow_html=True)
+        st.subheader("🎯 实时评分预览")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("预估总分", f"{current_score['总分']}分")
+        with col2:
+            color = "#10b981" if current_score['档位'] <= target_grade else "#ef4444"
+            st.markdown(f"""
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; color: #666;">预估档位</div>
+                <div style="font-size: 2rem; font-weight: bold; color: {color};">{current_score['档位']}档</div>
+                <div style="font-size: 0.8rem; color: #666;">目标：{target_grade}档</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with col3:
+            st.metric("预估月薪", f"¥{current_score['预估月薪']}")
+        
+        # 显示各项得分详情
+        st.markdown("##### 各项得分详情")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("分销得分", f"{current_score['分销得分']}/25")
+            st.caption(f"均季度: {current_score['分销均季度']}条")
+        with col2:
+            st.metric("条盒回收得分", f"{current_score['条盒回收得分']}/35")
+            st.caption(f"均季度: {current_score['条盒均季度']}条")
+        with col3:
+            st.metric("核心户得分", f"{current_score['核心户得分']}/20")
+            st.caption(f"核心户数: {core_customers}人")
+        with col4:
+            st.metric("综合得分", f"{current_score['综合得分']}/20")
+            st.caption("地市经理评分")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # 数据填报表单
+        with st.form("monthly_data_form", clear_on_submit=False):
             st.markdown("### 分销数据填报（单位：条）")
             
             cols = st.columns(len(quarter_months))
-            dist_values = []
+            new_dist_values = []
             
             for i, month in enumerate(quarter_months):
                 with cols[i]:
@@ -630,14 +734,14 @@ def staff_dashboard():
                     
                     value = st.number_input(f"{month}分销", 
                                           min_value=0, 
-                                          value=int(user_row[col_name]) if col_name in user_row else 0,
+                                          value=int(dist_values[i]),
                                           key=f"dist_{st.session_state.user_name}_{month_num}")
-                    dist_values.append(value)
+                    new_dist_values.append(value)
             
             st.markdown("### 条盒回收数据填报（单位：条）")
             
             cols = st.columns(len(quarter_months))
-            recycle_values = []
+            new_recycle_values = []
             
             for i, month in enumerate(quarter_months):
                 with cols[i]:
@@ -647,15 +751,15 @@ def staff_dashboard():
                     
                     value = st.number_input(f"{month}回收", 
                                           min_value=0, 
-                                          value=int(user_row[col_name]) if col_name in user_row else 0,
+                                          value=int(recycle_values[i]),
                                           key=f"recycle_{st.session_state.user_name}_{month_num}")
-                    recycle_values.append(value)
+                    new_recycle_values.append(value)
             
             # 核心户数
-            core_customers = st.number_input("本季度核心户数", 
-                                           min_value=0, 
-                                           value=int(user_row['核心户数']) if '核心户数' in user_row else 0,
-                                           key=f"core_{st.session_state.user_name}")
+            new_core_customers = st.number_input("本季度核心户数", 
+                                               min_value=0, 
+                                               value=int(core_customers),
+                                               key=f"core_{st.session_state.user_name}")
             
             submitted = st.form_submit_button("保存季度数据", type="primary")
             
@@ -669,11 +773,11 @@ def staff_dashboard():
                     dist_col = f'分销_{month_num}月'
                     recycle_col = f'条盒_{month_num}月'
                     
-                    st.session_state.performance_data.at[idx, dist_col] = dist_values[i]
-                    st.session_state.performance_data.at[idx, recycle_col] = recycle_values[i]
+                    st.session_state.performance_data.at[idx, dist_col] = new_dist_values[i]
+                    st.session_state.performance_data.at[idx, recycle_col] = new_recycle_values[i]
                 
                 # 更新核心户数
-                st.session_state.performance_data.at[idx, '核心户数'] = core_customers
+                st.session_state.performance_data.at[idx, '核心户数'] = new_core_customers
                 
                 # 重新计算绩效
                 st.session_state.performance_data = calculate_performance(
