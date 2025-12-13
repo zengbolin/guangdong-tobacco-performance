@@ -370,13 +370,13 @@ def login_page():
             st.markdown('<div class="metric-card">', unsafe_allow_html=True)
             st.subheader("请选择身份登录")
             
-            role = st.radio("您的身份", ["事务员", "地市经理", "管理员"], horizontal=True)
+            role = st.radio("您的身份", ["事务员", "地市经理", "管理员"], horizontal=True, key="role_radio")
             
             if role == "事务员":
                 staff_names = st.session_state.performance_data['事务员'].tolist()
-                user_name = st.selectbox("请选择您的姓名", staff_names)
+                user_name = st.selectbox("请选择您的姓名", staff_names, key="staff_select")
                 
-                if st.button("登录", type="primary", use_container_width=True):
+                if st.button("登录", type="primary", use_container_width=True, key="staff_login_btn"):
                     st.session_state.authenticated = True
                     st.session_state.user_role = "staff"
                     st.session_state.user_name = user_name
@@ -388,10 +388,10 @@ def login_page():
             
             elif role == "地市经理":
                 cities = st.session_state.performance_data['地市'].unique().tolist()
-                city = st.selectbox("请选择您管理的地市", cities)
-                manager_pwd = st.text_input("地市经理密码", type="password", value="manager123")
+                city = st.selectbox("请选择您管理的地市", cities, key="city_select")
+                manager_pwd = st.text_input("地市经理密码", type="password", value="manager123", key="manager_pwd_input")
                 
-                if st.button("地市经理登录", type="primary", use_container_width=True):
+                if st.button("地市经理登录", type="primary", use_container_width=True, key="manager_login_btn"):
                     if manager_pwd == "manager123":
                         st.session_state.authenticated = True
                         st.session_state.user_role = "manager"
@@ -402,9 +402,9 @@ def login_page():
                         st.error("密码错误！")
             
             else:  # 管理员
-                admin_pwd = st.text_input("管理员密码", type="password")
+                admin_pwd = st.text_input("管理员密码", type="password", key="admin_pwd_input")
                 
-                if st.button("管理员登录", type="primary", use_container_width=True):
+                if st.button("管理员登录", type="primary", use_container_width=True, key="admin_login_btn"):
                     if admin_pwd == "admin123":
                         st.session_state.authenticated = True
                         st.session_state.user_role = "admin"
@@ -535,7 +535,7 @@ def staff_dashboard():
                     value = st.number_input(f"{month}分销", 
                                           min_value=0, 
                                           value=int(user_row[f'分销_本月{i+1}']),
-                                          key=f"dist_{i}")
+                                          key=f"dist_{st.session_state.user_name}_{i}")
                     dist_values.append(value)
             
             st.markdown("### 条盒回收数据填报（单位：条）")
@@ -547,13 +547,14 @@ def staff_dashboard():
                     value = st.number_input(f"{month}回收", 
                                           min_value=0, 
                                           value=int(user_row[f'条盒_本月{i+1}']),
-                                          key=f"recycle_{i}")
+                                          key=f"recycle_{st.session_state.user_name}_{i}")
                     recycle_values.append(value)
             
             # 核心户数
             core_customers = st.number_input("本季度核心户数", 
                                            min_value=0, 
-                                           value=int(user_row['核心户数']))
+                                           value=int(user_row['核心户数']),
+                                           key=f"core_{st.session_state.user_name}")
             
             submitted = st.form_submit_button("保存季度数据", type="primary")
             
@@ -584,11 +585,11 @@ def staff_dashboard():
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("### 输入模拟数据")
-                target_grade = st.selectbox("目标档位", list(range(1, 11)), index=5)
-                dist_q = st.number_input("分销季度总量（条）", min_value=0, value=900)
-                recycle_q = st.number_input("条盒回收季度总量（条）", min_value=0, value=1200)
-                core_customers = st.number_input("核心户数", min_value=0, value=28)
-                comp_score = st.number_input("综合评分（0-20）", min_value=0, max_value=20, value=16)
+                target_grade = st.selectbox("目标档位", list(range(1, 11)), index=5, key="calc_target_grade")
+                dist_q = st.number_input("分销季度总量（条）", min_value=0, value=900, key="calc_dist_q")
+                recycle_q = st.number_input("条盒回收季度总量（条）", min_value=0, value=1200, key="calc_recycle_q")
+                core_customers = st.number_input("核心户数", min_value=0, value=28, key="calc_core_customers")
+                comp_score = st.number_input("综合评分（0-20）", min_value=0, max_value=20, value=16, key="calc_comp_score")
             
             with col2:
                 # 计算得分
@@ -626,7 +627,7 @@ def staff_dashboard():
         
         if st.session_state.quarter_history:
             quarters = list(st.session_state.quarter_history.keys())
-            selected_quarter = st.selectbox("选择历史季度查看", quarters)
+            selected_quarter = st.selectbox("选择历史季度查看", quarters, key="history_quarter_select")
             
             if selected_quarter in st.session_state.quarter_history:
                 history_data = pd.DataFrame(st.session_state.quarter_history[selected_quarter])
@@ -671,7 +672,7 @@ def admin_dashboard():
             key="admin_editor"
         )
         
-        if st.button("保存所有修改", type="primary", use_container_width=True):
+        if st.button("保存所有修改", type="primary", use_container_width=True, key="save_all_changes_btn"):
             for col in edited_df.columns:
                 if col in st.session_state.performance_data.columns:
                     st.session_state.performance_data[col] = edited_df[col]
@@ -701,12 +702,11 @@ def admin_dashboard():
             # 达标情况
             df = st.session_state.performance_data
             df['是否达标'] = df['档位'] <= df['季度目标档位']
-            # 修复这里的缩进问题
             da_biao_lv = df['是否达标'].mean() * 100
             
-            st.metric("整体达标率", f"{da_biao_lv:.1f}%")
-            st.metric("平均档位", f"{df['档位'].mean():.1f}档")
-            st.metric("平均目标档位", f"{df['季度目标档位'].mean():.1f}档")
+            st.metric("整体达标率", f"{da_biao_lv:.1f}%", key="达标率_metric")
+            st.metric("平均档位", f"{df['档位'].mean():.1f}档", key="平均档位_metric")
+            st.metric("平均目标档位", f"{df['季度目标档位'].mean():.1f}档", key="平均目标档位_metric")
     
     with tab3:
         st.subheader("🔄 季度管理")
@@ -722,9 +722,10 @@ def admin_dashboard():
             # 手动切换季度
             st.markdown("### 手动切换季度")
             new_quarter = st.selectbox("选择新季度", 
-                                      [f"2024年{quarter}" for quarter in ["Q1季度", "Q2季度", "Q3季度", "Q4季度"]])
+                                      [f"2024年{quarter}" for quarter in ["Q1季度", "Q2季度", "Q3季度", "Q4季度"]],
+                                      key="new_quarter_select")
             
-            if st.button("切换到新季度", type="primary"):
+            if st.button("切换到新季度", type="primary", key="switch_quarter_btn"):
                 st.session_state.current_quarter = new_quarter
                 st.success(f"已切换到{new_quarter}")
                 st.rerun()
@@ -733,9 +734,9 @@ def admin_dashboard():
             st.markdown("### 季度重置操作")
             st.warning("⚠️ 季度重置会清空当前数据并保存到历史记录")
             
-            target_grade = st.slider("设置下季度目标档位", 1, 10, 6)
+            target_grade = st.slider("设置下季度目标档位", 1, 10, 6, key="target_grade_slider")
             
-            if st.button("执行季度重置", type="primary", use_container_width=True):
+            if st.button("执行季度重置", type="primary", use_container_width=True, key="reset_quarter_btn"):
                 st.session_state.performance_data = reset_quarter_data(
                     st.session_state.performance_data,
                     target_grade
@@ -751,9 +752,9 @@ def admin_dashboard():
             st.markdown("### 历史季度数据")
             if st.session_state.quarter_history:
                 quarters = list(st.session_state.quarter_history.keys())
-                selected_q = st.selectbox("查看历史季度", quarters)
+                selected_q = st.selectbox("查看历史季度", quarters, key="history_q_select")
                 
-                if st.button("导出历史季度数据"):
+                if st.button("导出历史季度数据", key="export_history_btn"):
                     hist_data = pd.DataFrame(st.session_state.quarter_history[selected_q])
                     csv = hist_data.to_csv(index=False).encode('utf-8')
                     
@@ -761,7 +762,8 @@ def admin_dashboard():
                         label=f"下载{selected_q}数据",
                         data=csv,
                         file_name=f"{selected_q}_绩效数据.csv",
-                        mime="text/csv"
+                        mime="text/csv",
+                        key=f"download_{selected_q}_btn"
                     )
             else:
                 st.info("暂无历史季度数据")
@@ -784,12 +786,13 @@ def admin_dashboard():
                 data=excel_data,
                 file_name=f"广东中烟绩效数据_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                use_container_width=True,
+                key="export_excel_btn"
             )
         
         with col2:
             st.markdown("### 📥 导入数据")
-            uploaded_file = st.file_uploader("选择Excel文件", type=['xlsx', 'xls'])
+            uploaded_file = st.file_uploader("选择Excel文件", type=['xlsx', 'xls'], key="file_uploader")
             
             if uploaded_file is not None:
                 try:
@@ -797,7 +800,7 @@ def admin_dashboard():
                     st.write("预览上传的数据（前5行）：")
                     st.dataframe(df.head())
                     
-                    if st.button("确认导入并覆盖当前数据", type="primary"):
+                    if st.button("确认导入并覆盖当前数据", type="primary", key="import_data_btn"):
                         required_cols = ['地市', '事务员']
                         if all(col in df.columns for col in required_cols):
                             # 重新计算绩效
@@ -811,32 +814,35 @@ def admin_dashboard():
                     st.error(f"读取文件出错：{str(e)}")
     
     with tab5:
-        st.subheader("系统设置")
+        st.subheader("⚙️ 系统设置")
         
         # 修改密码
         st.markdown("### 🔒 密码管理")
         
         col1, col2 = st.columns(2)
         with col1:
-            current_admin_pwd = st.text_input("当前管理员密码", type="password")
-            new_admin_pwd = st.text_input("新管理员密码", type="password")
-            confirm_admin_pwd = st.text_input("确认新密码", type="password")
+            st.markdown("#### 修改管理员密码")
+            current_admin_pwd = st.text_input("当前管理员密码", type="password", key="current_admin_pwd")
+            new_admin_pwd = st.text_input("新管理员密码", type="password", key="new_admin_pwd")
+            confirm_admin_pwd = st.text_input("确认新密码", type="password", key="confirm_admin_pwd")
             
-            if st.button("修改管理员密码", type="primary"):
+            if st.button("修改管理员密码", type="primary", key="change_admin_pwd_btn"):
                 if current_admin_pwd == "admin123":
                     if new_admin_pwd == confirm_admin_pwd:
                         st.success("管理员密码修改成功！")
+                        # 在实际应用中，这里应该将新密码保存到数据库或配置文件
                     else:
                         st.error("两次输入的新密码不一致")
                 else:
                     st.error("当前密码错误")
         
         with col2:
-            current_manager_pwd = st.text_input("当前地市经理密码", type="password", value="manager123")
-            new_manager_pwd = st.text_input("新地市经理密码", type="password")
-            confirm_manager_pwd = st.text_input("确认新密码", type="password")
+            st.markdown("#### 修改地市经理密码")
+            current_manager_pwd = st.text_input("当前地市经理密码", type="password", value="manager123", key="current_manager_pwd")
+            new_manager_pwd = st.text_input("新地市经理密码", type="password", key="new_manager_pwd")
+            confirm_manager_pwd = st.text_input("确认新密码", type="password", key="confirm_manager_pwd")
             
-            if st.button("修改地市经理密码", type="primary"):
+            if st.button("修改地市经理密码", type="primary", key="change_manager_pwd_btn"):
                 if current_manager_pwd == "manager123":
                     if new_manager_pwd == confirm_manager_pwd:
                         st.success("地市经理密码修改成功！")
@@ -887,7 +893,7 @@ def main():
         st.markdown(f'<span class="quarter-badge {q_class}">{st.session_state.current_quarter}</span>', unsafe_allow_html=True)
     
     with col3:
-        if st.button("退出登录", use_container_width=True):
+        if st.button("退出登录", use_container_width=True, key="logout_btn"):
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
