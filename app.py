@@ -706,29 +706,30 @@ def manager_dashboard():
                 
                 st.divider()
     
+    # 在管理员页面的全局分析部分，确保代码结构正确
     with tab2:
-        st.subheader("地区绩效分析")
+        st.subheader("全局分析")
         
-        col1, col2, col3 = st.columns(3)
+        st.subheader("📊 档位分布情况")
+        grade_dist = st.session_state.performance_data['档位'].value_counts().sort_index()
+        
+        col1, col2 = st.columns(2)
         with col1:
-            avg_score = city_data['总分'].mean()
-            st.metric("平均总分", f"{avg_score:.1f}分")
+            fig = px.pie(values=grade_dist.values, 
+                        names=[f"{g}档" for g in grade_dist.index],
+                        title='当前季度档位分布')
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        # 这部分的缩进必须一致
+        df = st.session_state.performance_data
+        df['是否达标'] = df['档位'] <= df['季度目标档位']
+        da_biao_lv = df['是否达标'].mean() * 100
         
-        with col2:
-            avg_grade = city_data['档位'].mean()
-            st.metric("平均档位", f"{avg_grade:.1f}档")
-        
-        with col3:
-           达标率 = (city_data['档位'] <= city_data['季度目标档位']).mean() * 100
-            st.metric("达标率", f"{达标率:.1f}%")
-        
-        # 档位分布图
-        st.subheader("档位分布")
-        grade_dist = city_data['档位'].value_counts().sort_index()
-        fig = px.bar(x=[f"{g}档" for g in grade_dist.index], 
-                    y=grade_dist.values,
-                    title=f"{st.session_state.current_city}档位分布")
-        st.plotly_chart(fig, use_container_width=True)
+        # 确保下面三行代码的缩进相同
+        st.metric("整体达标率", f"{da_biao_lv:.1f}%")
+        st.metric("平均档位", f"{df['档位'].mean():.1f}档")
+        st.metric("平均目标档位", f"{df['季度目标档位'].mean():.1f}档")
     
     with tab3:
         st.subheader("批量综合评分")
@@ -992,3 +993,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
