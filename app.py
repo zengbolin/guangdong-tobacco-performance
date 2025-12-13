@@ -1,3 +1,4 @@
+# ========== 页面配置 ==========
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -5,6 +6,8 @@ from datetime import datetime
 from io import BytesIO
 import numpy as np
 import json
+import os
+import pickle
 
 # ========== 页面配置 ==========
 st.set_page_config(
@@ -114,6 +117,60 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ========== 数据持久化存储 ==========
+DATA_FILE = "performance_data.pkl"
+HISTORY_FILE = "quarter_history.pkl"
+
+def save_data():
+    """保存数据到文件"""
+    try:
+        data_to_save = {
+            'performance_data': st.session_state.performance_data,
+            'quarter_history': st.session_state.quarter_history,
+            'current_quarter': st.session_state.current_quarter,
+            'last_reset': st.session_state.last_reset,
+            'data_history': st.session_state.data_history
+        }
+        with open(DATA_FILE, 'wb') as f:
+            pickle.dump(data_to_save, f)
+        return True
+    except Exception as e:
+        st.error(f"保存数据时出错：{str(e)}")
+        return False
+
+def load_data():
+    """从文件加载数据"""
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, 'rb') as f:
+                data = pickle.load(f)
+                return data
+        return None
+    except Exception as e:
+        st.error(f"加载数据时出错：{str(e)}")
+        return None
+
+def save_history():
+    """保存季度历史数据"""
+    try:
+        with open(HISTORY_FILE, 'wb') as f:
+            pickle.dump(st.session_state.quarter_history, f)
+        return True
+    except Exception as e:
+        st.error(f"保存历史数据时出错：{str(e)}")
+        return False
+
+def load_history():
+    """加载季度历史数据"""
+    try:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, 'rb') as f:
+                return pickle.load(f)
+        return {}
+    except Exception as e:
+        st.error(f"加载历史数据时出错：{str(e)}")
+        return {}
+
 # ========== Session State 初始化 ==========
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
@@ -123,16 +180,23 @@ if 'user_name' not in st.session_state:
     st.session_state.user_name = None
 if 'current_city' not in st.session_state:
     st.session_state.current_city = None
+
+# 从文件加载数据
 if 'performance_data' not in st.session_state:
-    st.session_state.performance_data = None
-if 'quarter_history' not in st.session_state:
-    st.session_state.quarter_history = {}
-if 'current_quarter' not in st.session_state:
-    st.session_state.current_quarter = None
-if 'last_reset' not in st.session_state:
-    st.session_state.last_reset = None
-if 'data_history' not in st.session_state:
-    st.session_state.data_history = {}
+    loaded_data = load_data()
+    if loaded_data:
+        st.session_state.performance_data = loaded_data.get('performance_data')
+        st.session_state.quarter_history = loaded_data.get('quarter_history', {})
+        st.session_state.current_quarter = loaded_data.get('current_quarter')
+        st.session_state.last_reset = loaded_data.get('last_reset')
+        st.session_state.data_history = loaded_data.get('data_history', {})
+    else:
+        st.session_state.performance_data = None
+        st.session_state.quarter_history = {}
+        st.session_state.current_quarter = None
+        st.session_state.last_reset = None
+        st.session_state.data_history = {}
+
 if 'data_sync_flag' not in st.session_state:
     st.session_state.data_sync_flag = False
 
@@ -152,7 +216,7 @@ def get_staff_data(staff_name):
     return staff_data.iloc[0].to_dict()
 
 def update_staff_data(staff_name, updates):
-    """更新事务员数据"""
+    """更新事务员数据并保存到文件"""
     if st.session_state.performance_data is None:
         return False
     
@@ -194,6 +258,9 @@ def update_staff_data(staff_name, updates):
             st.session_state.performance_data, 
             st.session_state.current_quarter
         )
+        
+        # 保存到文件
+        save_data()
         
         return True
         
@@ -316,6 +383,9 @@ def reset_quarter_data(df, target_grade=6):
     
     # 清空数据历史（新季度开始）
     st.session_state.data_history = {}
+    
+    # 保存数据
+    save_data()
     
     return reset_df
 
@@ -695,6 +765,10 @@ def get_current_quarter_data(df, quarter):
 def login_page():
     st.markdown('<h1 class="main-header">🔐 广东中烟绩效管理系统（季度版）</h1>', unsafe_allow_html=True)
     
+    # 显示数据状态
+    if os.path.exists(DATA_FILE):
+        st.markdown(f'<div class="sync-status">💾 数据已从本地文件加载</div>', unsafe_allow_html=True)
+    
     # 初始化当前季度
     if st.session_state.current_quarter is None:
         st.session_state.current_quarter = get_current_quarter()
@@ -716,6 +790,8 @@ def login_page():
             st.session_state.performance_data, 
             st.session_state.current_quarter
         )
+        # 保存初始数据
+        save_data()
     
     # 季度显示
     quarter_badge = {
@@ -815,6 +891,11 @@ def login_page():
         - 地市经理：manager123
         - 管理员：admin123
         
+        **💾 数据存储：**
+        - 所有数据都保存在本地文件中
+        - 每次数据更新都会自动保存
+        - 关闭浏览器后数据不会丢失
+        
         **📝 重要提示：**
         - Q4季度（10-12月）按4个月的数据折算为季度平均值
         - 每个季度开始时会自动重置数据
@@ -886,6 +967,27 @@ def staff_dashboard():
             comp_score = staff_data['综合得分'] if '综合得分' in staff_data else 0
             st.metric("综合得分", f"{comp_score}/20")
             st.caption("地市经理评分")
+        
+        # 显示当前填报的数据
+        st.divider()
+        st.subheader("📋 当前填报数据")
+        
+        quarter_months = get_quarter_months(st.session_state.current_quarter)
+        col_count = len(quarter_months)
+        
+        if col_count > 0:
+            cols = st.columns(col_count)
+            for i, month in enumerate(quarter_months):
+                with cols[i]:
+                    month_num = int(month.replace('月', ''))
+                    dist_col = f'分销_{month_num}月'
+                    recycle_col = f'条盒_{month_num}月'
+                    
+                    dist_value = staff_data[dist_col] if dist_col in staff_data else 0
+                    recycle_value = staff_data[recycle_col] if recycle_col in staff_data else 0
+                    
+                    st.metric(f"{month}分销", f"{dist_value}条")
+                    st.metric(f"{month}回收", f"{recycle_value}条")
         
         # 改进建议和提升档位提示
         st.divider()
@@ -1044,16 +1146,13 @@ def staff_dashboard():
                 
                 if success:
                     st.success("✅ 季度数据保存成功！")
-                    st.info("数据已同步到系统中，地市经理和管理员可以立即查看。")
+                    st.info("💾 数据已保存到本地文件，地市经理和管理员可以立即查看。")
                     
                     # 显示保存的数据
                     with st.expander("查看保存的数据详情", expanded=True):
                         for i, month in enumerate(quarter_months):
                             st.write(f"{month}: 分销 {new_dist_values[i]}条, 回收 {new_recycle_values[i]}条")
                         st.write(f"核心户数: {new_core_customers}人")
-                    
-                    # 设置同步标志
-                    st.session_state.data_sync_flag = True
                     
                     # 自动刷新页面
                     st.rerun()
@@ -1079,7 +1178,7 @@ def manager_dashboard():
     st.success(f"您正在管理：{managed_city}地区，共{len(city_data)}位事务员")
     
     # 显示数据验证
-    st.info(f"✅ 数据已同步，以下是事务员填报的最新数据")
+    st.info(f"✅ 数据已从本地文件加载，以下是事务员填报的最新数据")
     
     # 创建标签页
     tab1, tab2, tab3 = st.tabs(["👥 事务员管理", "📊 地区分析", "📈 绩效考核"])
@@ -1182,17 +1281,20 @@ def manager_dashboard():
                     
                     # 执行更新
                     staff_name = row['事务员']
-                    update_staff_data(staff_name, updates)
-            
-            # 设置同步标志
-            st.session_state.data_sync_flag = True
+                    success = update_staff_data(staff_name, updates)
             
             st.success(f"✅ {managed_city}地区数据保存成功！")
+            st.info("💾 数据已保存到本地文件")
             st.rerun()
 
 # ========== 管理员页面 ==========
 def admin_dashboard():
     st.markdown('<h2 class="main-header">👑 管理员控制台</h2>', unsafe_allow_html=True)
+    
+    # 显示数据状态
+    if os.path.exists(DATA_FILE):
+        file_size = os.path.getsize(DATA_FILE) / 1024
+        st.markdown(f'<div class="sync-status">💾 数据文件大小: {file_size:.1f} KB | 上次修改: {datetime.fromtimestamp(os.path.getmtime(DATA_FILE)).strftime("%Y-%m-%d %H:%M:%S")}</div>', unsafe_allow_html=True)
     
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 数据管理", "📊 全局分析", "🔄 季度管理", "📤 数据导入导出", "⚙️ 系统设置"])
     
@@ -1254,6 +1356,7 @@ def admin_dashboard():
                 
                 st.write(f"**核心户数：** {pang_lei_data['核心户数'] if '核心户数' in pang_lei_data else 0}人")
                 st.write(f"**综合评分：** {pang_lei_data['综合评分'] if '综合评分' in pang_lei_data else 0}分")
+                st.write(f"**目标档位：** {pang_lei_data['季度目标档位'] if '季度目标档位' in pang_lei_data else 6}档")
         
         # 显示数据编辑界面
         st.write(f"显示数据：{len(display_data)} 行")
@@ -1288,7 +1391,7 @@ def admin_dashboard():
         if not edited_df.equals(display_data):
             st.markdown('<div class="data-changed">📝 检测到数据修改，请保存以应用更改</div>', unsafe_allow_html=True)
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("保存修改", type="primary", use_container_width=True, key="save_all_changes_btn"):
                 # 保存修改到主数据
@@ -1320,13 +1423,33 @@ def admin_dashboard():
                         
                         # 执行更新
                         staff_name = row['事务员']
-                        update_staff_data(staff_name, updates)
-                
-                # 设置同步标志
-                st.session_state.data_sync_flag = True
+                        success = update_staff_data(staff_name, updates)
                 
                 st.success("✅ 数据保存成功！")
+                st.info("💾 数据已保存到本地文件")
                 st.rerun()
+        
+        with col2:
+            if st.button("重新计算绩效", type="secondary", use_container_width=True, key="recalculate_btn"):
+                st.session_state.performance_data = calculate_performance(
+                    st.session_state.performance_data, 
+                    st.session_state.current_quarter
+                )
+                save_data()
+                st.success("✅ 绩效重新计算完成！")
+                st.rerun()
+        
+        with col3:
+            if st.button("备份数据", type="secondary", use_container_width=True, key="backup_btn"):
+                # 创建备份文件
+                backup_file = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl"
+                with open(backup_file, 'wb') as f:
+                    pickle.dump({
+                        'performance_data': st.session_state.performance_data,
+                        'quarter_history': st.session_state.quarter_history,
+                        'current_quarter': st.session_state.current_quarter
+                    }, f)
+                st.success(f"✅ 数据已备份到 {backup_file}")
 
 # ========== 主程序 ==========
 def main():
@@ -1363,6 +1486,9 @@ def main():
     
     with col3:
         if st.button("退出登录", use_container_width=True, key="logout_btn"):
+            # 保存数据
+            save_data()
+            # 清空session state
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
