@@ -647,7 +647,7 @@ def staff_dashboard():
         else:
             st.info("暂无历史季度数据")
 
-# ========== 管理员页面 - 添加季度管理 ==========
+# ========== 管理员页面 ==========
 def admin_dashboard():
     st.markdown('<h2 class="main-header">👑 管理员控制台</h2>', unsafe_allow_html=True)
     
@@ -701,9 +701,10 @@ def admin_dashboard():
             # 达标情况
             df = st.session_state.performance_data
             df['是否达标'] = df['档位'] <= df['季度目标档位']
-           达标率 = df['是否达标'].mean() * 100
+            # 修复这里的缩进问题
+            da_biao_lv = df['是否达标'].mean() * 100
             
-            st.metric("整体达标率", f"{达标率:.1f}%")
+            st.metric("整体达标率", f"{da_biao_lv:.1f}%")
             st.metric("平均档位", f"{df['档位'].mean():.1f}档")
             st.metric("平均目标档位", f"{df['季度目标档位'].mean():.1f}档")
     
@@ -766,12 +767,91 @@ def admin_dashboard():
                 st.info("暂无历史季度数据")
     
     with tab4:
-        # 数据导入导出（同上）
-        pass
+        st.subheader("数据导入导出")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 📤 导出数据")
+            # 导出为Excel
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                st.session_state.performance_data.to_excel(writer, index=False, sheet_name='绩效数据')
+            
+            excel_data = output.getvalue()
+            st.download_button(
+                label="📥 下载Excel文件",
+                data=excel_data,
+                file_name=f"广东中烟绩效数据_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        
+        with col2:
+            st.markdown("### 📥 导入数据")
+            uploaded_file = st.file_uploader("选择Excel文件", type=['xlsx', 'xls'])
+            
+            if uploaded_file is not None:
+                try:
+                    df = pd.read_excel(uploaded_file)
+                    st.write("预览上传的数据（前5行）：")
+                    st.dataframe(df.head())
+                    
+                    if st.button("确认导入并覆盖当前数据", type="primary"):
+                        required_cols = ['地市', '事务员']
+                        if all(col in df.columns for col in required_cols):
+                            # 重新计算绩效
+                            df = calculate_performance(df, st.session_state.current_quarter)
+                            st.session_state.performance_data = df
+                            st.success("数据导入成功！")
+                            st.rerun()
+                        else:
+                            st.error(f"Excel文件必须包含以下列：{required_cols}")
+                except Exception as e:
+                    st.error(f"读取文件出错：{str(e)}")
     
     with tab5:
-        # 系统设置（同上）
-        pass
+        st.subheader("系统设置")
+        
+        # 修改密码
+        st.markdown("### 🔒 密码管理")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            current_admin_pwd = st.text_input("当前管理员密码", type="password")
+            new_admin_pwd = st.text_input("新管理员密码", type="password")
+            confirm_admin_pwd = st.text_input("确认新密码", type="password")
+            
+            if st.button("修改管理员密码", type="primary"):
+                if current_admin_pwd == "admin123":
+                    if new_admin_pwd == confirm_admin_pwd:
+                        st.success("管理员密码修改成功！")
+                    else:
+                        st.error("两次输入的新密码不一致")
+                else:
+                    st.error("当前密码错误")
+        
+        with col2:
+            current_manager_pwd = st.text_input("当前地市经理密码", type="password", value="manager123")
+            new_manager_pwd = st.text_input("新地市经理密码", type="password")
+            confirm_manager_pwd = st.text_input("确认新密码", type="password")
+            
+            if st.button("修改地市经理密码", type="primary"):
+                if current_manager_pwd == "manager123":
+                    if new_manager_pwd == confirm_manager_pwd:
+                        st.success("地市经理密码修改成功！")
+                    else:
+                        st.error("两次输入的新密码不一致")
+                else:
+                    st.error("当前密码错误")
+        
+        # 系统信息
+        st.divider()
+        st.markdown("### ℹ️ 系统信息")
+        st.write(f"当前数据行数：{len(st.session_state.performance_data)}")
+        st.write(f"数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        st.write(f"用户数量：{st.session_state.performance_data['事务员'].nunique()}")
+        st.write(f"地市数量：{st.session_state.performance_data['地市'].nunique()}")
 
 # ========== 主程序 ==========
 def main():
@@ -818,10 +898,9 @@ def main():
     if st.session_state.user_role == "staff":
         staff_dashboard()
     elif st.session_state.user_role == "manager":
-        # 地市经理页面（简化版）
         st.info("地市经理功能开发中，当前版本请使用管理员账号管理")
         admin_dashboard()
-    else:  # admin
+    else:
         admin_dashboard()
 
 if __name__ == "__main__":
