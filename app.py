@@ -1,4 +1,3 @@
-# ========== 页面配置 ==========
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -1158,6 +1157,88 @@ def staff_dashboard():
                     st.rerun()
                 else:
                     st.error("❌ 保存数据失败，请重试")
+    
+    with tab3:
+        st.subheader("🧮 得分与工资计算器")
+        
+        with st.container():
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("### 输入模拟数据")
+                target_grade = st.selectbox("目标档位", list(range(1, 11)), index=5, key="calc_target_grade")
+                dist_q = st.number_input("分销季度总量（条）", min_value=0, value=900, key="calc_dist_q")
+                recycle_q = st.number_input("条盒回收季度总量（条）", min_value=0, value=1200, key="calc_recycle_q")
+                core_customers = st.number_input("核心户数", min_value=0, value=28, key="calc_core_customers")
+                comp_score = st.slider("综合评分（0-20）", 0, 20, 16, key="calc_comp_score")
+            
+            with col2:
+                # 计算得分
+                dist_score = calculate_distribution_score(dist_q)
+                recycle_score = calculate_recycling_score(recycle_q)
+                core_score = calculate_core_customer_score(core_customers)
+                total_score = dist_score + recycle_score + core_score + comp_score
+                grade, salary = calculate_salary_grade(total_score)
+                
+                # 检查档位
+                warning_level, warning_msg = check_grade_warning(grade, target_grade)
+                
+                st.markdown(f"""
+                <div class="{warning_level}-card">
+                    <h4>{warning_msg}</h4>
+                </div>
+                <div class="data-card" style="margin-top: 1rem;">
+                    <h4>各项得分：</h4>
+                    <p>📦 分销得分：<b>{dist_score}/25</b></p>
+                    <p>📊 条盒回收得分：<b>{recycle_score}/35</b></p>
+                    <p>👥 核心户得分：<b>{core_score}/20</b></p>
+                    <p>⭐ 综合得分：<b>{comp_score}/20</b></p>
+                    <hr>
+                    <h3>总分：<span style="color:#4f46e5">{total_score}分</span></h3>
+                    <h4>档位：{grade}档 (目标：{target_grade}档)</h4>
+                    <h2>预估季度月薪：<span style="color:#10b981">¥{salary}</span></h2>
+                </div>
+                """, unsafe_allow_html=True)
+    
+    with tab4:
+        st.subheader("📈 历史季度数据")
+        
+        if st.session_state.quarter_history:
+            quarters = list(st.session_state.quarter_history.keys())
+            if quarters:
+                selected_quarter = st.selectbox("选择历史季度查看", quarters, key="history_quarter_select")
+                
+                if selected_quarter in st.session_state.quarter_history:
+                    history_data = pd.DataFrame(st.session_state.quarter_history[selected_quarter])
+                    user_history = history_data[history_data['事务员'] == st.session_state.user_name]
+                    
+                    if not user_history.empty:
+                        hist_row = user_history.iloc[0]
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric(f"{selected_quarter}总分", f"{hist_row['总分']}分")
+                        with col2:
+                            st.metric(f"{selected_quarter}档位", f"{hist_row['档位']}档")
+                        with col3:
+                            st.metric(f"{selected_quarter}月薪", f"¥{hist_row['预估月薪']}")
+                        
+                        # 显示详细得分
+                        st.markdown("### 详细得分")
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("分销得分", f"{hist_row['分销得分']}/25")
+                        with col2:
+                            st.metric("条盒回收得分", f"{hist_row['条盒回收得分']}/35")
+                        with col3:
+                            st.metric("核心户得分", f"{hist_row['核心户得分']}/20")
+                        with col4:
+                            st.metric("综合得分", f"{hist_row['综合得分']}/20")
+                    else:
+                        st.info(f"{selected_quarter}没有您的历史数据")
+            else:
+                st.info("暂无历史季度数据")
+        else:
+            st.info("暂无历史季度数据")
 
 # ========== 地市经理页面 ==========
 def manager_dashboard():
@@ -1286,6 +1367,124 @@ def manager_dashboard():
             st.success(f"✅ {managed_city}地区数据保存成功！")
             st.info("💾 数据已保存到本地文件")
             st.rerun()
+    
+    with tab2:
+        st.subheader(f"{managed_city}地区绩效分析")
+        
+        # 确保数据包含必要的列
+        if '总分' in city_data.columns:
+            # 总体统计
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                avg_score = city_data['总分'].mean()
+                st.metric("平均总分", f"{avg_score:.1f}分")
+            with col2:
+                if '档位' in city_data.columns:
+                    avg_grade = city_data['档位'].mean()
+                    st.metric("平均档位", f"{avg_grade:.1f}档")
+                else:
+                    st.metric("平均档位", "0档")
+            with col3:
+                if '是否达标' in city_data.columns:
+                    da_biao_lv = city_data['是否达标'].mean() * 100
+                    st.metric("达标率", f"{da_biao_lv:.1f}%")
+                else:
+                    st.metric("达标率", "0%")
+            
+            # 档位分布
+            if '档位' in city_data.columns:
+                st.subheader("档位分布")
+                grade_dist = city_data['档位'].value_counts().sort_index()
+                
+                if not grade_dist.empty:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        fig = px.bar(x=[f"{g}档" for g in grade_dist.index], 
+                                    y=grade_dist.values,
+                                    title='档位分布',
+                                    color=grade_dist.values,
+                                    color_continuous_scale='Viridis')
+                        fig.update_layout(xaxis_title="档位", yaxis_title="人数")
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        fig = px.pie(values=grade_dist.values, 
+                                    names=[f"{g}档" for g in grade_dist.index],
+                                    title='档位占比')
+                        st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("暂无档位分布数据")
+            
+            # 绩效排名
+            st.subheader("事务员绩效排名")
+            if '总分' in city_data.columns and '事务员' in city_data.columns:
+                ranking_data = city_data[['事务员', '总分', '档位', '预估月薪']].sort_values('总分', ascending=False)
+                st.dataframe(ranking_data.reset_index(drop=True), use_container_width=True)
+            else:
+                st.info("暂无绩效排名数据")
+        else:
+            st.info("暂无地区分析数据")
+    
+    with tab3:
+        st.subheader("批量绩效操作")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 批量设置目标档位")
+            new_target_grade = st.slider("统一目标档位", 1, 10, 6, key="batch_target_grade")
+            
+            if st.button("批量设置目标档位", use_container_width=True, key="set_batch_target_btn"):
+                # 准备批量更新
+                updates_list = []
+                for idx in city_data.index:
+                    staff_name = city_data.at[idx, '事务员']
+                    updates = {'季度目标档位': new_target_grade}
+                    updates_list.append((staff_name, updates))
+                
+                # 执行批量更新
+                success_count = 0
+                for staff_name, updates in updates_list:
+                    if update_staff_data(staff_name, updates):
+                        success_count += 1
+                
+                st.success(f"✅ 已为{success_count}位事务员设置目标档位为{new_target_grade}档")
+                st.rerun()
+        
+        with col2:
+            st.markdown("### 批量重置综合评分")
+            reset_score = st.slider("重置为", 0, 20, 10, key="reset_score_slider")
+            
+            if st.button("批量重置综合评分", use_container_width=True, key="reset_scores_btn"):
+                # 准备批量更新
+                updates_list = []
+                for idx in city_data.index:
+                    staff_name = city_data.at[idx, '事务员']
+                    updates = {'综合评分': reset_score}
+                    updates_list.append((staff_name, updates))
+                
+                # 执行批量更新
+                success_count = 0
+                for staff_name, updates in updates_list:
+                    if update_staff_data(staff_name, updates):
+                        success_count += 1
+                
+                st.success(f"✅ 已重置{success_count}位事务员的综合评分为{reset_score}分")
+                st.rerun()
+        
+        # 导出地区数据
+        st.divider()
+        st.markdown("### 导出地区数据")
+        
+        csv_data = city_data.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label=f"📥 下载{managed_city}地区数据",
+            data=csv_data,
+            file_name=f"{managed_city}_绩效数据_{st.session_state.current_quarter}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="export_city_data_btn"
+        )
 
 # ========== 管理员页面 ==========
 def admin_dashboard():
@@ -1450,6 +1649,92 @@ def admin_dashboard():
                         'current_quarter': st.session_state.current_quarter
                     }, f)
                 st.success(f"✅ 数据已备份到 {backup_file}")
+    
+    with tab2:
+        st.subheader("全局分析")
+        
+        if st.session_state.performance_data is not None and not st.session_state.performance_data.empty:
+            # 总体统计
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                total_staff = len(st.session_state.performance_data)
+                st.metric("事务员总数", total_staff)
+            with col2:
+                if '总分' in st.session_state.performance_data.columns:
+                    avg_score = st.session_state.performance_data['总分'].mean()
+                    st.metric("平均总分", f"{avg_score:.1f}分")
+                else:
+                    st.metric("平均总分", "0分")
+            with col3:
+                if '档位' in st.session_state.performance_data.columns:
+                    avg_grade = st.session_state.performance_data['档位'].mean()
+                    st.metric("平均档位", f"{avg_grade:.1f}档")
+                else:
+                    st.metric("平均档位", "0档")
+            with col4:
+                if '是否达标' in st.session_state.performance_data.columns:
+                    da_biao_lv = st.session_state.performance_data['是否达标'].mean() * 100
+                    st.metric("整体达标率", f"{da_biao_lv:.1f}%")
+                else:
+                    st.metric("整体达标率", "0%")
+            
+            # 档位分布
+            if '档位' in st.session_state.performance_data.columns:
+                st.subheader("📊 档位分布情况")
+                grade_dist = st.session_state.performance_data['档位'].value_counts().sort_index()
+                
+                if not grade_dist.empty:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        fig = px.pie(values=grade_dist.values, 
+                                    names=[f"{g}档" for g in grade_dist.index],
+                                    title='档位分布饼图')
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        fig = px.bar(x=[f"{g}档" for g in grade_dist.index], 
+                                    y=grade_dist.values,
+                                    title='档位分布柱状图',
+                                    color=grade_dist.values,
+                                    color_continuous_scale='Blues')
+                        fig.update_layout(xaxis_title="档位", yaxis_title="人数")
+                        st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("暂无档位分布数据")
+            
+            # 地区分析
+            if '地市' in st.session_state.performance_data.columns and '总分' in st.session_state.performance_data.columns:
+                st.subheader("🏙️ 地区绩效分析")
+                city_stats = st.session_state.performance_data.groupby('地市').agg({
+                    '总分': 'mean',
+                    '档位': 'mean',
+                    '事务员': 'count'
+                }).round(1).reset_index()
+                
+                city_stats.columns = ['地市', '平均总分', '平均档位', '事务员数']
+                
+                if not city_stats.empty:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        fig = px.bar(city_stats.sort_values('平均总分', ascending=False).head(10),
+                                    x='地市', y='平均总分',
+                                    title='平均总分前十地区',
+                                    color='平均总分',
+                                    color_continuous_scale='Viridis')
+                        fig.update_layout(xaxis_title="地市", yaxis_title="平均总分")
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        fig = px.scatter(city_stats, x='事务员数', y='平均总分',
+                                        size='事务员数', hover_name='地市',
+                                        title='地区人数与绩效关系',
+                                        color='平均档位',
+                                        color_continuous_scale='RdYlGn')
+                        st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("暂无地区分析数据")
+        else:
+            st.info("暂无全局分析数据")
 
 # ========== 主程序 ==========
 def main():
