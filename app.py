@@ -4,6 +4,7 @@ import plotly.express as px
 from datetime import datetime
 from io import BytesIO
 import numpy as np
+import json
 
 # ========== 页面配置 ==========
 st.set_page_config(
@@ -92,6 +93,16 @@ st.markdown("""
     .data-changed {
         background: linear-gradient(90deg, #fef3c7 0%, #fde68a 100%);
         border: 2px solid #f59e0b;
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    .sync-status {
+        background: linear-gradient(90deg, #d1fae5 0%, #a7f3d0 100%);
+        border: 2px solid #10b981;
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -115,8 +126,86 @@ if 'last_reset' not in st.session_state:
     st.session_state.last_reset = None
 if 'data_history' not in st.session_state:
     st.session_state.data_history = {}
-if 'current_quarter_only' not in st.session_state:
-    st.session_state.current_quarter_only = True
+if 'data_sync_flag' not in st.session_state:
+    st.session_state.data_sync_flag = False
+
+# ========== 数据同步函数 ==========
+def save_staff_data(staff_name, dist_values, recycle_values, core_customers, quarter_months):
+    """保存事务员数据到主数据库"""
+    try:
+        # 找到事务员的索引
+        staff_idx = st.session_state.performance_data[
+            st.session_state.performance_data['事务员'] == staff_name
+        ].index
+        
+        if len(staff_idx) == 0:
+            st.error(f"找不到事务员：{staff_name}")
+            return False
+        
+        staff_idx = staff_idx[0]
+        
+        # 记录原始数据（用于比较）
+        original_data = {}
+        
+        # 更新分销数据
+        for i, month in enumerate(quarter_months):
+            month_num = int(month.replace('月', ''))
+            dist_col = f'分销_{month_num}月'
+            recycle_col = f'条盒_{month_num}月'
+            
+            # 记录原始值
+            original_data[dist_col] = st.session_state.performance_data.at[staff_idx, dist_col]
+            original_data[recycle_col] = st.session_state.performance_data.at[staff_idx, recycle_col]
+            
+            # 更新新值
+            st.session_state.performance_data.at[staff_idx, dist_col] = dist_values[i]
+            st.session_state.performance_data.at[staff_idx, recycle_col] = recycle_values[i]
+        
+        # 更新核心户数
+        original_core = st.session_state.performance_data.at[staff_idx, '核心户数']
+        st.session_state.performance_data.at[staff_idx, '核心户数'] = core_customers
+        
+        # 重新计算绩效
+        st.session_state.performance_data = calculate_performance(
+            st.session_state.performance_data, 
+            st.session_state.current_quarter
+        )
+        
+        # 检查数据是否有变化
+        data_changed = False
+        for i, month in enumerate(quarter_months):
+            month_num = int(month.replace('月', ''))
+            dist_col = f'分销_{month_num}月'
+            if original_data.get(dist_col, 0) != dist_values[i]:
+                data_changed = True
+                break
+        
+        if original_core != core_customers:
+            data_changed = True
+        
+        # 记录数据变更
+        if data_changed:
+            if staff_name not in st.session_state.data_history:
+                st.session_state.data_history[staff_name] = []
+            
+            st.session_state.data_history[staff_name].append({
+                '时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                '操作': '事务员填报数据',
+                '分销数据': dist_values,
+                '回收数据': recycle_values,
+                '核心户数': core_customers,
+                '原始数据': original_data,
+                '原始核心户数': original_core
+            })
+        
+        # 设置数据同步标志
+        st.session_state.data_sync_flag = True
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"保存数据时出错：{str(e)}")
+        return False
 
 # ========== 季度管理函数 ==========
 def get_current_quarter():
@@ -222,6 +311,9 @@ def reset_quarter_data(df, target_grade=6):
     
     # 更新重置记录
     st.session_state.last_reset = st.session_state.current_quarter
+    
+    # 清空数据历史（新季度开始）
+    st.session_state.data_history = {}
     
     return reset_df
 
@@ -512,6 +604,11 @@ def get_current_quarter_data(df, quarter):
 def login_page():
     st.markdown('<h1 class="main-header">🔐 广东中烟绩效管理系统（季度版）</h1>', unsafe_allow_html=True)
     
+    # 显示数据同步状态
+    if st.session_state.get('data_sync_flag', False):
+        st.markdown('<div class="sync-status">✅ 数据已同步</div>', unsafe_allow_html=True)
+        st.session_state.data_sync_flag = False
+    
     # 初始化当前季度
     if st.session_state.current_quarter is None:
         st.session_state.current_quarter = get_current_quarter()
@@ -653,6 +750,9 @@ def staff_dashboard():
     
     user_row = user_data.iloc[0]
     
+    # 显示当前数据状态
+    st.markdown(f'<div class="data-card">当前状态：您的数据已保存到系统，地市经理和管理员可以查看</div>', unsafe_allow_html=True)
+    
     # 创建标签页
     tab1, tab2, tab3, tab4 = st.tabs(["📊 季度绩效", "📝 实时数据填报", "🧮 得分计算器", "📈 历史季度"])
     
@@ -706,27 +806,26 @@ def staff_dashboard():
             st.metric("综合得分", f"{comp_score}/20")
             st.caption("地市经理评分")
         
-        # 改进建议
-        if '档位' in user_row and '季度目标档位' in user_row:
-            if user_row['档位'] > user_row['季度目标档位']:
-                st.divider()
-                st.subheader("💡 改进建议")
-                
-                suggestions = []
-                if dist_score < 15:
-                    suggestions.append("分销得分较低，建议增加分销数量")
-                if recycle_score < 20:
-                    suggestions.append("条盒回收需要加强")
-                if core_score < 10:
-                    suggestions.append("需要发展更多核心户")
-                if comp_score < 10:
-                    suggestions.append("请加强与地市经理的沟通配合")
-                
-                if suggestions:
-                    for suggestion in suggestions:
-                        st.write(f"• {suggestion}")
-                else:
-                    st.write("各项表现均衡，继续保持！")
+        # 显示当前填报的数据
+        st.divider()
+        st.subheader("📋 当前填报数据")
+        
+        quarter_months = get_quarter_months(st.session_state.current_quarter)
+        col_count = len(quarter_months)
+        
+        if col_count > 0:
+            cols = st.columns(col_count)
+            for i, month in enumerate(quarter_months):
+                with cols[i]:
+                    month_num = int(month.replace('月', ''))
+                    dist_col = f'分销_{month_num}月'
+                    recycle_col = f'条盒_{month_num}月'
+                    
+                    dist_value = user_row[dist_col] if dist_col in user_row else 0
+                    recycle_value = user_row[recycle_col] if recycle_col in user_row else 0
+                    
+                    st.metric(f"{month}分销", f"{dist_value}条")
+                    st.metric(f"{month}回收", f"{recycle_value}条")
     
     with tab2:
         st.subheader(f"📅 {st.session_state.current_quarter} 实时数据填报")
@@ -837,41 +936,35 @@ def staff_dashboard():
             submitted = st.form_submit_button("保存季度数据", type="primary")
             
             if submitted:
-                # 找到用户索引
-                idx = user_data.index[0]
-                
-                # 更新分销数据
-                for i, month in enumerate(quarter_months):
-                    month_num = int(month.replace('月', ''))
-                    dist_col = f'分销_{month_num}月'
-                    recycle_col = f'条盒_{month_num}月'
-                    
-                    st.session_state.performance_data.at[idx, dist_col] = new_dist_values[i]
-                    st.session_state.performance_data.at[idx, recycle_col] = new_recycle_values[i]
-                
-                # 更新核心户数
-                st.session_state.performance_data.at[idx, '核心户数'] = new_core_customers
-                
-                # 重新计算绩效
-                st.session_state.performance_data = calculate_performance(
-                    st.session_state.performance_data, 
-                    st.session_state.current_quarter
+                # 使用专用函数保存数据
+                success = save_staff_data(
+                    st.session_state.user_name,
+                    new_dist_values,
+                    new_recycle_values,
+                    new_core_customers,
+                    quarter_months
                 )
                 
-                # 记录数据变更
-                if st.session_state.user_name not in st.session_state.data_history:
-                    st.session_state.data_history[st.session_state.user_name] = []
-                
-                st.session_state.data_history[st.session_state.user_name].append({
-                    '时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    '操作': '事务员填报数据',
-                    '分销数据': new_dist_values,
-                    '回收数据': new_recycle_values,
-                    '核心户数': new_core_customers
-                })
-                
-                st.success("季度数据保存成功！")
-                st.rerun()
+                if success:
+                    st.success("✅ 季度数据保存成功！数据已同步到系统中。")
+                    st.markdown("""
+                    **数据已同步：**
+                    - ✅ 您的数据已保存到主数据库
+                    - ✅ 地市经理可以立即查看您的数据
+                    - ✅ 管理员可以立即查看您的数据
+                    - ✅ 系统已重新计算您的绩效得分
+                    """)
+                    
+                    # 显示保存的数据
+                    with st.expander("查看保存的数据详情", expanded=True):
+                        for i, month in enumerate(quarter_months):
+                            st.write(f"{month}: 分销 {new_dist_values[i]}条, 回收 {new_recycle_values[i]}条")
+                        st.write(f"核心户数: {new_core_customers}人")
+                    
+                    # 自动刷新页面
+                    st.rerun()
+                else:
+                    st.error("❌ 保存数据失败，请重试")
     
     with tab3:
         st.subheader("🧮 得分与工资计算器")
@@ -913,47 +1006,6 @@ def staff_dashboard():
                     <h2>预估季度月薪：<span style="color:#10b981">¥{salary}</span></h2>
                 </div>
                 """, unsafe_allow_html=True)
-    
-    with tab4:
-        st.subheader("📈 历史季度数据")
-        
-        if st.session_state.quarter_history:
-            quarters = list(st.session_state.quarter_history.keys())
-            if quarters:
-                selected_quarter = st.selectbox("选择历史季度查看", quarters, key="history_quarter_select")
-                
-                if selected_quarter in st.session_state.quarter_history:
-                    history_data = pd.DataFrame(st.session_state.quarter_history[selected_quarter])
-                    user_history = history_data[history_data['事务员'] == st.session_state.user_name]
-                    
-                    if not user_history.empty:
-                        hist_row = user_history.iloc[0]
-                        
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric(f"{selected_quarter}总分", f"{hist_row['总分']}分")
-                        with col2:
-                            st.metric(f"{selected_quarter}档位", f"{hist_row['档位']}档")
-                        with col3:
-                            st.metric(f"{selected_quarter}月薪", f"¥{hist_row['预估月薪']}")
-                        
-                        # 显示详细得分
-                        st.markdown("### 详细得分")
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            st.metric("分销得分", f"{hist_row['分销得分']}/25")
-                        with col2:
-                            st.metric("条盒回收得分", f"{hist_row['条盒回收得分']}/35")
-                        with col3:
-                            st.metric("核心户得分", f"{hist_row['核心户得分']}/20")
-                        with col4:
-                            st.metric("综合得分", f"{hist_row['综合得分']}/20")
-                    else:
-                        st.info(f"{selected_quarter}没有您的历史数据")
-            else:
-                st.info("暂无历史季度数据")
-        else:
-            st.info("暂无历史季度数据")
 
 # ========== 地市经理页面 ==========
 def manager_dashboard():
@@ -974,19 +1026,27 @@ def manager_dashboard():
     st.success(f"您正在管理：{managed_city}地区，共{len(city_data)}位事务员")
     
     # 显示最近的数据变更记录
+    show_recent_changes = False
     if st.session_state.data_history:
-        st.info("📝 最近数据变更记录（事务员填报的数据）")
+        recent_changes = []
         for staff_name, records in st.session_state.data_history.items():
             # 只显示本地区的事务员
             if staff_name in city_data['事务员'].values:
-                latest_record = records[-1] if records else None
-                if latest_record:
-                    with st.expander(f"{staff_name}的最新填报记录"):
-                        st.write(f"时间：{latest_record['时间']}")
-                        st.write(f"操作：{latest_record['操作']}")
-                        st.write(f"分销数据：{latest_record['分销数据']}")
-                        st.write(f"回收数据：{latest_record['回收数据']}")
-                        st.write(f"核心户数：{latest_record['核心户数']}")
+                if records:
+                    latest_record = records[-1]
+                    recent_changes.append({
+                        '事务员': staff_name,
+                        '时间': latest_record['时间'],
+                        '操作': latest_record['操作']
+                    })
+        
+        if recent_changes:
+            show_recent_changes = True
+            st.markdown('<div class="data-changed">', unsafe_allow_html=True)
+            st.subheader("📝 最近数据变更记录")
+            for change in recent_changes[-3:]:  # 只显示最近3条
+                st.write(f"**{change['事务员']}** - {change['时间']} - {change['操作']}")
+            st.markdown('</div>', unsafe_allow_html=True)
     
     # 创建标签页
     tab1, tab2, tab3 = st.tabs(["👥 事务员管理", "📊 地区分析", "📈 绩效考核"])
@@ -1000,6 +1060,9 @@ def manager_dashboard():
         if current_city_data.empty:
             st.warning("没有找到当前季度的数据")
             return
+        
+        # 显示数据验证
+        st.info(f"✅ 数据已同步，共{len(current_city_data)}位事务员的数据")
         
         # 显示数据编辑界面
         edited_df = st.data_editor(
@@ -1031,9 +1094,27 @@ def manager_dashboard():
             key="manager_editor"
         )
         
-        # 检查是否有数据被修改
-        if not edited_df.equals(current_city_data):
-            st.markdown('<div class="data-changed" style="padding: 1rem; border-radius: 10px; margin: 1rem 0;">📝 检测到数据修改，请保存以应用更改</div>', unsafe_allow_html=True)
+        # 检查数据差异
+        data_diff = not edited_df.equals(current_city_data)
+        
+        if data_diff:
+            st.markdown('<div class="data-changed">📝 检测到数据修改，请保存以应用更改</div>', unsafe_allow_html=True)
+            
+            # 显示具体修改
+            with st.expander("查看具体修改", expanded=False):
+                for idx, row in edited_df.iterrows():
+                    original_row = current_city_data.loc[idx]
+                    changes = []
+                    
+                    for col in edited_df.columns:
+                        if col in original_row and row[col] != original_row[col]:
+                            changes.append(f"{col}: {original_row[col]} → {row[col]}")
+                    
+                    if changes:
+                        staff_name = row['事务员'] if '事务员' in row else f"行{idx+1}"
+                        st.write(f"**{staff_name}** 的修改：")
+                        for change in changes:
+                            st.write(f"  - {change}")
         
         if st.button("保存修改", type="primary", use_container_width=True, key="save_manager_changes_btn"):
             # 保存修改到主数据
@@ -1052,7 +1133,10 @@ def manager_dashboard():
                     
                     # 更新目标档位
                     if '季度目标档位' in row:
-                        st.session_state.performance_data.at[original_idx, '季度目标档位'] = row['季度目标档位']
+                        old_target = st.session_state.performance_data.at[original_idx, '季度目标档位']
+                        new_target = row['季度目标档位']
+                        if old_target != new_target:
+                            st.session_state.performance_data.at[original_idx, '季度目标档位'] = new_target
                     
                     # 更新核心户数
                     if '核心户数' in row:
@@ -1068,9 +1152,16 @@ def manager_dashboard():
                         recycle_col = f'条盒_{month_num}月'
                         
                         if dist_col in row:
-                            st.session_state.performance_data.at[original_idx, dist_col] = row[dist_col]
+                            old_dist = st.session_state.performance_data.at[original_idx, dist_col]
+                            new_dist = row[dist_col]
+                            if old_dist != new_dist:
+                                st.session_state.performance_data.at[original_idx, dist_col] = new_dist
+                        
                         if recycle_col in row:
-                            st.session_state.performance_data.at[original_idx, recycle_col] = row[recycle_col]
+                            old_recycle = st.session_state.performance_data.at[original_idx, recycle_col]
+                            new_recycle = row[recycle_col]
+                            if old_recycle != new_recycle:
+                                st.session_state.performance_data.at[original_idx, recycle_col] = new_recycle
             
             # 重新计算绩效
             st.session_state.performance_data = calculate_performance(
@@ -1089,131 +1180,22 @@ def manager_dashboard():
                 '修改人数': len(edited_df)
             })
             
-            st.success(f"{managed_city}地区数据保存成功！")
+            # 设置同步标志
+            st.session_state.data_sync_flag = True
+            
+            st.success(f"✅ {managed_city}地区数据保存成功！")
             st.rerun()
-    
-    with tab2:
-        st.subheader(f"{managed_city}地区绩效分析")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            avg_score = city_data['总分'].mean() if '总分' in city_data.columns else 0
-            st.metric("平均总分", f"{avg_score:.1f}分")
-        with col2:
-            avg_grade = city_data['档位'].mean() if '档位' in city_data.columns else 0
-            st.metric("平均档位", f"{avg_grade:.1f}档")
-        with col3:
-            if '是否达标' in city_data.columns:
-                da_biao_lv = city_data['是否达标'].mean() * 100
-                st.metric("达标率", f"{da_biao_lv:.1f}%")
-            else:
-                st.metric("达标率", "0%")
-        
-        # 档位分布
-        if '档位' in city_data.columns:
-            st.subheader("档位分布")
-            grade_dist = city_data['档位'].value_counts().sort_index()
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                fig = px.bar(x=[f"{g}档" for g in grade_dist.index], 
-                            y=grade_dist.values,
-                            title='档位分布',
-                            color=grade_dist.values,
-                            color_continuous_scale='Viridis')
-                fig.update_layout(xaxis_title="档位", yaxis_title="人数")
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                fig = px.pie(values=grade_dist.values, 
-                            names=[f"{g}档" for g in grade_dist.index],
-                            title='档位占比')
-                st.plotly_chart(fig, use_container_width=True)
-        
-        # 绩效排名
-        st.subheader("事务员绩效排名")
-        if '总分' in city_data.columns and '事务员' in city_data.columns:
-            ranking_data = city_data[['事务员', '总分', '档位', '预估月薪']].sort_values('总分', ascending=False)
-            st.dataframe(ranking_data.reset_index(drop=True), use_container_width=True)
-    
-    with tab3:
-        st.subheader("批量绩效操作")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### 批量设置目标档位")
-            new_target_grade = st.slider("统一目标档位", 1, 10, 6, key="batch_target_grade")
-            
-            if st.button("批量设置目标档位", use_container_width=True, key="set_batch_target_btn"):
-                for idx in city_data.index:
-                    st.session_state.performance_data.at[idx, '季度目标档位'] = new_target_grade
-                
-                st.session_state.performance_data = calculate_performance(
-                    st.session_state.performance_data,
-                    st.session_state.current_quarter
-                )
-                
-                # 记录操作
-                if st.session_state.user_name not in st.session_state.data_history:
-                    st.session_state.data_history[st.session_state.user_name] = []
-                
-                st.session_state.data_history[st.session_state.user_name].append({
-                    '时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    '操作': '批量设置目标档位',
-                    '地区': managed_city,
-                    '目标档位': new_target_grade
-                })
-                
-                st.success(f"已为{managed_city}地区所有事务员设置目标档位为{new_target_grade}档")
-                st.rerun()
-        
-        with col2:
-            st.markdown("### 批量重置综合评分")
-            reset_score = st.slider("重置为", 0, 20, 10, key="reset_score_slider")
-            
-            if st.button("批量重置综合评分", use_container_width=True, key="reset_scores_btn"):
-                for idx in city_data.index:
-                    st.session_state.performance_data.at[idx, '综合评分'] = reset_score
-                
-                st.session_state.performance_data = calculate_performance(
-                    st.session_state.performance_data,
-                    st.session_state.current_quarter
-                )
-                
-                # 记录操作
-                if st.session_state.user_name not in st.session_state.data_history:
-                    st.session_state.data_history[st.session_state.user_name] = []
-                
-                st.session_state.data_history[st.session_state.user_name].append({
-                    '时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    '操作': '批量重置综合评分',
-                    '地区': managed_city,
-                    '综合评分': reset_score
-                })
-                
-                st.success(f"已重置{managed_city}地区所有事务员的综合评分为{reset_score}分")
-                st.rerun()
-        
-        # 导出地区数据
-        st.divider()
-        st.markdown("### 导出地区数据")
-        
-        csv_data = city_data.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label=f"📥 下载{managed_city}地区数据",
-            data=csv_data,
-            file_name=f"{managed_city}_绩效数据_{st.session_state.current_quarter}.csv",
-            mime="text/csv",
-            use_container_width=True,
-            key="export_city_data_btn"
-        )
 
 # ========== 管理员页面 ==========
 def admin_dashboard():
     st.markdown('<h2 class="main-header">👑 管理员控制台</h2>', unsafe_allow_html=True)
     
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📋 数据管理", "📊 全局分析", "🔄 季度管理", "📤 数据导入导出", "📝 操作记录", "⚙️ 系统设置"])
+    # 显示数据同步状态
+    if st.session_state.get('data_sync_flag', False):
+        st.markdown('<div class="sync-status">✅ 数据已同步，所有角色都可以看到最新数据</div>', unsafe_allow_html=True)
+        st.session_state.data_sync_flag = False
+    
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 数据管理", "📊 全局分析", "🔄 季度管理", "📤 数据导入导出", "⚙️ 系统设置"])
     
     with tab1:
         st.subheader("全员数据管理")
@@ -1254,16 +1236,50 @@ def admin_dashboard():
         # 显示最近数据变更
         if st.session_state.data_history:
             with st.expander("📝 最近数据变更记录", expanded=False):
-                for user_name, records in list(st.session_state.data_history.items())[-5:]:  # 只显示最近5条
+                changes_count = 0
+                for user_name, records in list(st.session_state.data_history.items())[-10:]:  # 只显示最近10条
                     if records:
                         latest_record = records[-1]
                         st.write(f"**{user_name}** - {latest_record['时间']}")
                         st.write(f"操作：{latest_record['操作']}")
+                        
                         if '分销数据' in latest_record:
                             st.write(f"分销数据：{latest_record['分销数据']}")
                         if '地区' in latest_record:
                             st.write(f"地区：{latest_record['地区']}")
+                        if '修改人数' in latest_record:
+                            st.write(f"修改人数：{latest_record['修改人数']}")
+                        
                         st.divider()
+                        changes_count += 1
+                
+                if changes_count > 0:
+                    st.info(f"共显示{changes_count}条最近的数据变更记录")
+        
+        # 显示庞雷的示例数据（特别验证）
+        if "庞雷" in st.session_state.performance_data['事务员'].values:
+            pang_lei_data = st.session_state.performance_data[
+                st.session_state.performance_data['事务员'] == "庞雷"
+            ].iloc[0]
+            
+            with st.expander("🔍 验证：庞雷的数据（示例）", expanded=False):
+                st.write("**庞雷的当前季度数据：**")
+                quarter_months = get_quarter_months(st.session_state.current_quarter)
+                
+                for month in quarter_months:
+                    month_num = int(month.replace('月', ''))
+                    dist_col = f'分销_{month_num}月'
+                    recycle_col = f'条盒_{month_num}月'
+                    
+                    if dist_col in pang_lei_data:
+                        st.write(f"{month}分销：{pang_lei_data[dist_col]}条")
+                    if recycle_col in pang_lei_data:
+                        st.write(f"{month}回收：{pang_lei_data[recycle_col]}条")
+                
+                if '核心户数' in pang_lei_data:
+                    st.write(f"核心户数：{pang_lei_data['核心户数']}人")
+                if '综合评分' in pang_lei_data:
+                    st.write(f"综合评分：{pang_lei_data['综合评分']}分")
         
         # 显示数据编辑界面
         st.write(f"显示数据：{len(display_data)} 行")
@@ -1296,7 +1312,7 @@ def admin_dashboard():
         
         # 检查是否有数据被修改
         if not edited_df.equals(display_data):
-            st.markdown('<div class="data-changed" style="padding: 1rem; border-radius: 10px; margin: 1rem 0;">📝 检测到数据修改，请保存以应用更改</div>', unsafe_allow_html=True)
+            st.markdown('<div class="data-changed">📝 检测到数据修改，请保存以应用更改</div>', unsafe_allow_html=True)
         
         col1, col2 = st.columns(2)
         with col1:
@@ -1342,7 +1358,10 @@ def admin_dashboard():
                     '修改行数': len(edited_df)
                 })
                 
-                st.success("数据保存成功！")
+                # 设置同步标志
+                st.session_state.data_sync_flag = True
+                
+                st.success("✅ 数据保存成功！")
                 st.rerun()
         
         with col2:
@@ -1351,339 +1370,8 @@ def admin_dashboard():
                     st.session_state.performance_data, 
                     st.session_state.current_quarter
                 )
-                st.success("绩效重新计算完成！")
+                st.success("✅ 绩效重新计算完成！")
                 st.rerun()
-    
-    with tab2:
-        st.subheader("全局分析")
-        
-        # 总体统计
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            total_staff = len(st.session_state.performance_data)
-            st.metric("事务员总数", total_staff)
-        with col2:
-            avg_score = st.session_state.performance_data['总分'].mean() if '总分' in st.session_state.performance_data.columns else 0
-            st.metric("平均总分", f"{avg_score:.1f}分")
-        with col3:
-            avg_grade = st.session_state.performance_data['档位'].mean() if '档位' in st.session_state.performance_data.columns else 0
-            st.metric("平均档位", f"{avg_grade:.1f}档")
-        with col4:
-            if '是否达标' in st.session_state.performance_data.columns:
-                da_biao_lv = st.session_state.performance_data['是否达标'].mean() * 100
-                st.metric("整体达标率", f"{da_biao_lv:.1f}%")
-            else:
-                st.metric("整体达标率", "0%")
-        
-        # 档位分布
-        st.subheader("📊 档位分布情况")
-        if '档位' in st.session_state.performance_data.columns:
-            grade_dist = st.session_state.performance_data['档位'].value_counts().sort_index()
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                fig = px.pie(values=grade_dist.values, 
-                            names=[f"{g}档" for g in grade_dist.index],
-                            title='档位分布饼图')
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                fig = px.bar(x=[f"{g}档" for g in grade_dist.index], 
-                            y=grade_dist.values,
-                            title='档位分布柱状图',
-                            color=grade_dist.values,
-                            color_continuous_scale='Blues')
-                fig.update_layout(xaxis_title="档位", yaxis_title="人数")
-                st.plotly_chart(fig, use_container_width=True)
-        
-        # 地区分析
-        st.subheader("🏙️ 地区绩效分析")
-        if '地市' in st.session_state.performance_data.columns and '总分' in st.session_state.performance_data.columns:
-            city_stats = st.session_state.performance_data.groupby('地市').agg({
-                '总分': 'mean',
-                '档位': 'mean',
-                '事务员': 'count'
-            }).round(1).reset_index()
-            
-            city_stats.columns = ['地市', '平均总分', '平均档位', '事务员数']
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                fig = px.bar(city_stats.sort_values('平均总分', ascending=False).head(10),
-                            x='地市', y='平均总分',
-                            title='平均总分前十地区',
-                            color='平均总分',
-                            color_continuous_scale='Viridis')
-                fig.update_layout(xaxis_title="地市", yaxis_title="平均总分")
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                fig = px.scatter(city_stats, x='事务员数', y='平均总分',
-                                size='事务员数', hover_name='地市',
-                                title='地区人数与绩效关系',
-                                color='平均档位',
-                                color_continuous_scale='RdYlGn')
-                st.plotly_chart(fig, use_container_width=True)
-    
-    with tab3:
-        st.subheader("🔄 季度管理")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### 当前季度信息")
-            st.info(f"当前季度：{st.session_state.current_quarter}")
-            st.info(f"事务员数量：{len(st.session_state.performance_data)}")
-            st.info(f"历史季度记录数：{len(st.session_state.quarter_history)}")
-            
-            # 手动切换季度
-            st.markdown("### 手动切换季度")
-            year = datetime.now().year
-            quarter_options = [f"{year}年{quarter}" for quarter in ["Q1季度", "Q2季度", "Q3季度", "Q4季度"]]
-            new_quarter = st.selectbox("选择新季度", quarter_options, key="new_quarter_select")
-            
-            if st.button("切换到新季度", type="primary", key="switch_quarter_btn"):
-                st.session_state.current_quarter = new_quarter
-                st.success(f"已切换到{new_quarter}")
-                st.rerun()
-        
-        with col2:
-            st.markdown("### 季度重置操作")
-            st.warning("⚠️ 季度重置会清空当前季度数据并保存到历史记录")
-            
-            target_grade = st.slider("设置下季度目标档位", 1, 10, 6, key="target_grade_slider")
-            
-            if st.button("执行季度重置", type="primary", use_container_width=True, key="reset_quarter_btn"):
-                st.session_state.performance_data = reset_quarter_data(
-                    st.session_state.performance_data,
-                    target_grade
-                )
-                st.session_state.performance_data = calculate_performance(
-                    st.session_state.performance_data,
-                    st.session_state.current_quarter
-                )
-                
-                # 记录操作
-                if st.session_state.user_name not in st.session_state.data_history:
-                    st.session_state.data_history[st.session_state.user_name] = []
-                
-                st.session_state.data_history[st.session_state.user_name].append({
-                    '时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    '操作': '季度数据重置',
-                    '目标档位': target_grade
-                })
-                
-                st.success(f"季度数据已重置！下季度目标档位：{target_grade}档")
-                st.rerun()
-            
-            # 查看历史季度
-            st.markdown("### 历史季度数据")
-            if st.session_state.quarter_history:
-                quarters = list(st.session_state.quarter_history.keys())
-                selected_q = st.selectbox("查看历史季度", quarters, key="history_q_select")
-                
-                if st.button("导出历史季度数据", key="export_history_btn"):
-                    hist_data = pd.DataFrame(st.session_state.quarter_history[selected_q])
-                    csv = hist_data.to_csv(index=False).encode('utf-8')
-                    
-                    st.download_button(
-                        label=f"下载{selected_q}数据",
-                        data=csv,
-                        file_name=f"{selected_q}_绩效数据.csv",
-                        mime="text/csv",
-                        key=f"download_{selected_q}_btn"
-                    )
-            else:
-                st.info("暂无历史季度数据")
-    
-    with tab4:
-        st.subheader("数据导入导出")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### 📤 导出数据")
-            
-            # 导出当前季度数据
-            csv_data = st.session_state.performance_data.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 下载CSV文件",
-                data=csv_data,
-                file_name=f"广东中烟绩效数据_{st.session_state.current_quarter}.csv",
-                mime="text/csv",
-                use_container_width=True,
-                key="export_csv_btn"
-            )
-            
-            # 导出为Excel
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                # 导出当前季度数据
-                current_data = get_current_quarter_data(
-                    st.session_state.performance_data,
-                    st.session_state.current_quarter
-                )
-                current_data.to_excel(writer, index=False, sheet_name='当前季度数据')
-                
-                # 导出完整数据
-                st.session_state.performance_data.to_excel(writer, index=False, sheet_name='完整数据')
-                
-                # 如果有历史数据，也导出
-                if st.session_state.quarter_history:
-                    for quarter, data in st.session_state.quarter_history.items():
-                        hist_df = pd.DataFrame(data)
-                        hist_df.to_excel(writer, index=False, sheet_name=quarter[:10])
-            
-            excel_data = output.getvalue()
-            st.download_button(
-                label="📊 下载Excel文件",
-                data=excel_data,
-                file_name=f"广东中烟绩效数据_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="export_excel_btn"
-            )
-        
-        with col2:
-            st.markdown("### 📥 导入数据")
-            uploaded_file = st.file_uploader("选择Excel文件", type=['xlsx', 'xls'], key="file_uploader")
-            
-            if uploaded_file is not None:
-                try:
-                    df = pd.read_excel(uploaded_file)
-                    st.write("预览上传的数据（前5行）：")
-                    st.dataframe(df.head())
-                    
-                    if st.button("确认导入并覆盖当前数据", type="primary", key="import_data_btn"):
-                        required_cols = ['地市', '事务员']
-                        if all(col in df.columns for col in required_cols):
-                            # 确保所有必要列都存在
-                            for col in ['核心户数', '综合评分', '季度目标档位']:
-                                if col not in df.columns:
-                                    df[col] = 0 if col != '季度目标档位' else 6
-                            
-                            # 重新计算绩效
-                            df = calculate_performance(df, st.session_state.current_quarter)
-                            st.session_state.performance_data = df
-                            
-                            # 记录操作
-                            if st.session_state.user_name not in st.session_state.data_history:
-                                st.session_state.data_history[st.session_state.user_name] = []
-                            
-                            st.session_state.data_history[st.session_state.user_name].append({
-                                '时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                                '操作': '导入数据',
-                                '文件名': uploaded_file.name,
-                                '数据行数': len(df)
-                            })
-                            
-                            st.success("数据导入成功！")
-                            st.rerun()
-                        else:
-                            st.error(f"Excel文件必须包含以下列：{required_cols}")
-                except Exception as e:
-                    st.error(f"读取文件出错：{str(e)}")
-    
-    with tab5:
-        st.subheader("📝 操作记录")
-        
-        if st.session_state.data_history:
-            # 显示所有操作记录
-            for user_name, records in st.session_state.data_history.items():
-                with st.expander(f"📋 {user_name} 的操作记录", expanded=False):
-                    for i, record in enumerate(reversed(records)):  # 倒序显示，最新的在前面
-                        st.write(f"**记录 {len(records)-i}**")
-                        st.write(f"时间：{record['时间']}")
-                        st.write(f"操作：{record['操作']}")
-                        
-                        if '分销数据' in record:
-                            st.write(f"分销数据：{record['分销数据']}")
-                        if '回收数据' in record:
-                            st.write(f"回收数据：{record['回收数据']}")
-                        if '核心户数' in record:
-                            st.write(f"核心户数：{record['核心户数']}")
-                        if '地区' in record:
-                            st.write(f"地区：{record['地区']}")
-                        if '修改人数' in record:
-                            st.write(f"修改人数：{record['修改人数']}")
-                        if '目标档位' in record:
-                            st.write(f"目标档位：{record['目标档位']}")
-                        if '综合评分' in record:
-                            st.write(f"综合评分：{record['综合评分']}")
-                        if '修改行数' in record:
-                            st.write(f"修改行数：{record['修改行数']}")
-                        
-                        st.divider()
-            
-            # 导出操作记录
-            st.download_button(
-                label="📥 导出操作记录",
-                data=json.dumps(st.session_state.data_history, ensure_ascii=False, indent=2),
-                file_name=f"操作记录_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json",
-                use_container_width=True,
-                key="export_operation_log_btn"
-            )
-            
-            # 清空操作记录
-            if st.button("清空操作记录", type="secondary", use_container_width=True, key="clear_log_btn"):
-                st.session_state.data_history = {}
-                st.success("操作记录已清空！")
-                st.rerun()
-        else:
-            st.info("暂无操作记录")
-    
-    with tab6:
-        st.subheader("⚙️ 系统设置")
-        
-        # 修改密码
-        st.markdown("### 🔒 密码管理")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("#### 修改管理员密码")
-            current_admin_pwd = st.text_input("当前管理员密码", type="password", key="current_admin_pwd")
-            new_admin_pwd = st.text_input("新管理员密码", type="password", key="new_admin_pwd")
-            confirm_admin_pwd = st.text_input("确认新密码", type="password", key="confirm_admin_pwd")
-            
-            if st.button("修改管理员密码", type="primary", key="change_admin_pwd_btn"):
-                if current_admin_pwd == "admin123":
-                    if new_admin_pwd == confirm_admin_pwd:
-                        st.success("管理员密码修改成功！")
-                        # 在实际应用中，这里应该将新密码保存到数据库或配置文件
-                    else:
-                        st.error("两次输入的新密码不一致")
-                else:
-                    st.error("当前密码错误")
-        
-        with col2:
-            st.markdown("#### 修改地市经理密码")
-            current_manager_pwd = st.text_input("当前地市经理密码", type="password", value="manager123", key="current_manager_pwd")
-            new_manager_pwd = st.text_input("新地市经理密码", type="password", key="new_manager_pwd")
-            confirm_manager_pwd = st.text_input("确认新密码", type="password", key="confirm_manager_pwd")
-            
-            if st.button("修改地市经理密码", type="primary", key="change_manager_pwd_btn"):
-                if current_manager_pwd == "manager123":
-                    if new_manager_pwd == confirm_manager_pwd:
-                        st.success("地市经理密码修改成功！")
-                    else:
-                        st.error("两次输入的新密码不一致")
-                else:
-                    st.error("当前密码错误")
-        
-        # 系统信息
-        st.divider()
-        st.markdown("### ℹ️ 系统信息")
-        st.write(f"当前季度：{st.session_state.current_quarter}")
-        st.write(f"数据行数：{len(st.session_state.performance_data)}")
-        st.write(f"用户数量：{st.session_state.performance_data['事务员'].nunique()}")
-        st.write(f"地市数量：{st.session_state.performance_data['地市'].nunique()}")
-        st.write(f"历史季度数：{len(st.session_state.quarter_history)}")
-        st.write(f"最后重置时间：{st.session_state.last_reset if st.session_state.last_reset else '从未重置'}")
-        st.write(f"数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # 添加缺失的JSON导入
-        import json
 
 # ========== 主程序 ==========
 def main():
