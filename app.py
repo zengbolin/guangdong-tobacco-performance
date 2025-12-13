@@ -104,6 +104,13 @@ st.markdown("""
         padding: 1rem;
         margin: 1rem 0;
     }
+    .tip-card {
+        background: linear-gradient(90deg, #e0f2fe 0%, #bae6fd 100%);
+        border-left: 5px solid #0ea5e9;
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -129,9 +136,26 @@ if 'data_history' not in st.session_state:
 if 'data_sync_flag' not in st.session_state:
     st.session_state.data_sync_flag = False
 
-# ========== 数据同步函数 ==========
-def save_staff_data(staff_name, dist_values, recycle_values, core_customers, quarter_months):
-    """保存事务员数据到主数据库"""
+# ========== 核心数据操作函数 ==========
+def get_staff_data(staff_name):
+    """获取事务员的完整数据"""
+    if st.session_state.performance_data is None:
+        return None
+    
+    staff_data = st.session_state.performance_data[
+        st.session_state.performance_data['事务员'] == staff_name
+    ]
+    
+    if staff_data.empty:
+        return None
+    
+    return staff_data.iloc[0].to_dict()
+
+def update_staff_data(staff_name, updates):
+    """更新事务员数据"""
+    if st.session_state.performance_data is None:
+        return False
+    
     try:
         # 找到事务员的索引
         staff_idx = st.session_state.performance_data[
@@ -139,31 +163,31 @@ def save_staff_data(staff_name, dist_values, recycle_values, core_customers, qua
         ].index
         
         if len(staff_idx) == 0:
-            st.error(f"找不到事务员：{staff_name}")
             return False
         
         staff_idx = staff_idx[0]
         
-        # 记录原始数据（用于比较）
+        # 记录原始数据
         original_data = {}
+        for key in updates.keys():
+            if key in st.session_state.performance_data.columns:
+                original_data[key] = st.session_state.performance_data.at[staff_idx, key]
         
-        # 更新分销数据
-        for i, month in enumerate(quarter_months):
-            month_num = int(month.replace('月', ''))
-            dist_col = f'分销_{month_num}月'
-            recycle_col = f'条盒_{month_num}月'
-            
-            # 记录原始值
-            original_data[dist_col] = st.session_state.performance_data.at[staff_idx, dist_col]
-            original_data[recycle_col] = st.session_state.performance_data.at[staff_idx, recycle_col]
-            
-            # 更新新值
-            st.session_state.performance_data.at[staff_idx, dist_col] = dist_values[i]
-            st.session_state.performance_data.at[staff_idx, recycle_col] = recycle_values[i]
+        # 更新数据
+        for key, value in updates.items():
+            if key in st.session_state.performance_data.columns:
+                st.session_state.performance_data.at[staff_idx, key] = value
         
-        # 更新核心户数
-        original_core = st.session_state.performance_data.at[staff_idx, '核心户数']
-        st.session_state.performance_data.at[staff_idx, '核心户数'] = core_customers
+        # 记录数据变更
+        if staff_name not in st.session_state.data_history:
+            st.session_state.data_history[staff_name] = []
+        
+        st.session_state.data_history[staff_name].append({
+            '时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            '操作': '更新数据',
+            '更新内容': updates,
+            '原始数据': original_data
+        })
         
         # 重新计算绩效
         st.session_state.performance_data = calculate_performance(
@@ -171,41 +195,19 @@ def save_staff_data(staff_name, dist_values, recycle_values, core_customers, qua
             st.session_state.current_quarter
         )
         
-        # 检查数据是否有变化
-        data_changed = False
-        for i, month in enumerate(quarter_months):
-            month_num = int(month.replace('月', ''))
-            dist_col = f'分销_{month_num}月'
-            if original_data.get(dist_col, 0) != dist_values[i]:
-                data_changed = True
-                break
-        
-        if original_core != core_customers:
-            data_changed = True
-        
-        # 记录数据变更
-        if data_changed:
-            if staff_name not in st.session_state.data_history:
-                st.session_state.data_history[staff_name] = []
-            
-            st.session_state.data_history[staff_name].append({
-                '时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                '操作': '事务员填报数据',
-                '分销数据': dist_values,
-                '回收数据': recycle_values,
-                '核心户数': core_customers,
-                '原始数据': original_data,
-                '原始核心户数': original_core
-            })
-        
-        # 设置数据同步标志
-        st.session_state.data_sync_flag = True
-        
         return True
         
     except Exception as e:
-        st.error(f"保存数据时出错：{str(e)}")
+        st.error(f"更新数据时出错：{str(e)}")
         return False
+
+def get_current_quarter_month_columns():
+    """获取当前季度的月份列名"""
+    month_range = get_current_quarter_month_range()
+    columns = []
+    for month_num in month_range:
+        columns.extend([f'分销_{month_num}月', f'条盒_{month_num}月'])
+    return columns
 
 # ========== 季度管理函数 ==========
 def get_current_quarter():
@@ -450,6 +452,95 @@ def calculate_realtime_score_for_staff(dist_values, recycle_values, core_custome
         '是否达标': grade <= target_grade
     }
 
+def get_grade_improvement_tips(current_scores, target_grade):
+    """获取提升档位的建议"""
+    tips = []
+    
+    # 计算当前总分对应的档位
+    current_total = current_scores['总分']
+    current_grade, _ = calculate_salary_grade(current_total)
+    
+    if current_grade <= target_grade:
+        return ["✅ 已达到目标档位，继续保持！"]
+    
+    # 需要提升的分数
+    needed_improvement = 0
+    if target_grade == 1:
+        needed_score = 91
+    elif target_grade == 2:
+        needed_score = 81
+    elif target_grade == 3:
+        needed_score = 71
+    elif target_grade == 4:
+        needed_score = 61
+    elif target_grade == 5:
+        needed_score = 51
+    elif target_grade == 6:
+        needed_score = 46
+    elif target_grade == 7:
+        needed_score = 41
+    elif target_grade == 8:
+        needed_score = 36
+    elif target_grade == 9:
+        needed_score = 31
+    else:
+        needed_score = 0
+    
+    needed_improvement = max(0, needed_score - current_total)
+    
+    if needed_improvement == 0:
+        return ["✅ 已达到目标档位，继续保持！"]
+    
+    tips.append(f"📈 需要提升 {needed_improvement} 分才能达到 {target_grade} 档")
+    
+    # 各项得分分析
+    if current_scores['分销得分'] < 25:
+        tips.append(f"📦 分销得分：{current_scores['分销得分']}/25，可以提升 {25 - current_scores['分销得分']} 分")
+        if current_scores['分销均季度'] < 61:
+            tips.append(f"   → 建议将分销季度平均值提升到 61条以上（当前 {current_scores['分销均季度']}条）")
+        elif current_scores['分销均季度'] < 151:
+            tips.append(f"   → 建议将分销季度平均值提升到 151条以上（当前 {current_scores['分销均季度']}条）")
+        elif current_scores['分销均季度'] < 301:
+            tips.append(f"   → 建议将分销季度平均值提升到 301条以上（当前 {current_scores['分销均季度']}条）")
+        elif current_scores['分销均季度'] < 601:
+            tips.append(f"   → 建议将分销季度平均值提升到 601条以上（当前 {current_scores['分销均季度']}条）")
+        else:
+            tips.append(f"   → 建议将分销季度平均值提升到 1000条以上（当前 {current_scores['分销均季度']}条）")
+    
+    if current_scores['条盒回收得分'] < 35:
+        tips.append(f"📊 条盒回收得分：{current_scores['条盒回收得分']}/35，可以提升 {35 - current_scores['条盒回收得分']} 分")
+        if current_scores['条盒均季度'] < 181:
+            tips.append(f"   → 建议将条盒回收季度平均值提升到 181条以上（当前 {current_scores['条盒均季度']}条）")
+        elif current_scores['条盒均季度'] < 201:
+            tips.append(f"   → 建议将条盒回收季度平均值提升到 201条以上（当前 {current_scores['条盒均季度']}条）")
+        elif current_scores['条盒均季度'] < 301:
+            tips.append(f"   → 建议将条盒回收季度平均值提升到 301条以上（当前 {current_scores['条盒均季度']}条）")
+        elif current_scores['条盒均季度'] < 401:
+            tips.append(f"   → 建议将条盒回收季度平均值提升到 401条以上（当前 {current_scores['条盒均季度']}条）")
+        elif current_scores['条盒均季度'] < 601:
+            tips.append(f"   → 建议将条盒回收季度平均值提升到 601条以上（当前 {current_scores['条盒均季度']}条）")
+        elif current_scores['条盒均季度'] < 801:
+            tips.append(f"   → 建议将条盒回收季度平均值提升到 801条以上（当前 {current_scores['条盒均季度']}条）")
+        else:
+            tips.append(f"   → 建议将条盒回收季度平均值提升到 1000条以上（当前 {current_scores['条盒均季度']}条）")
+    
+    if current_scores['核心户得分'] < 20:
+        tips.append(f"👥 核心户得分：{current_scores['核心户得分']}/20，可以提升 {20 - current_scores['核心户得分']} 分")
+        if current_scores['核心户得分'] < 5:
+            tips.append(f"   → 建议将核心户数增加到 16人以上")
+        elif current_scores['核心户得分'] < 10:
+            tips.append(f"   → 建议将核心户数增加到 21人以上")
+        elif current_scores['核心户得分'] < 15:
+            tips.append(f"   → 建议将核心户数增加到 26人以上")
+        else:
+            tips.append(f"   → 建议将核心户数增加到 31人以上")
+    
+    if current_scores['综合得分'] < 20:
+        tips.append(f"⭐ 综合得分：{current_scores['综合得分']}/20，可以提升 {20 - current_scores['综合得分']} 分")
+        tips.append(f"   → 请加强与地市经理的沟通，提高工作表现评分")
+    
+    return tips
+
 # ========== 数据初始化 ==========
 def init_data_from_template():
     """从模板初始化数据"""
@@ -604,11 +695,6 @@ def get_current_quarter_data(df, quarter):
 def login_page():
     st.markdown('<h1 class="main-header">🔐 广东中烟绩效管理系统（季度版）</h1>', unsafe_allow_html=True)
     
-    # 显示数据同步状态
-    if st.session_state.get('data_sync_flag', False):
-        st.markdown('<div class="sync-status">✅ 数据已同步</div>', unsafe_allow_html=True)
-        st.session_state.data_sync_flag = False
-    
     # 初始化当前季度
     if st.session_state.current_quarter is None:
         st.session_state.current_quarter = get_current_quarter()
@@ -740,45 +826,40 @@ def staff_dashboard():
     st.markdown(f'<h2 class="main-header">👤 {st.session_state.user_name} 的个人中心</h2>', unsafe_allow_html=True)
     
     # 获取用户数据
-    user_data = st.session_state.performance_data[
-        st.session_state.performance_data['事务员'] == st.session_state.user_name
-    ]
+    staff_data = get_staff_data(st.session_state.user_name)
     
-    if user_data.empty:
+    if staff_data is None:
         st.error("未找到您的数据")
         return
-    
-    user_row = user_data.iloc[0]
-    
-    # 显示当前数据状态
-    st.markdown(f'<div class="data-card">当前状态：您的数据已保存到系统，地市经理和管理员可以查看</div>', unsafe_allow_html=True)
     
     # 创建标签页
     tab1, tab2, tab3, tab4 = st.tabs(["📊 季度绩效", "📝 实时数据填报", "🧮 得分计算器", "📈 历史季度"])
     
     with tab1:
         # 档位提醒
-        if '档位提醒级别' in user_row and '档位提醒信息' in user_row:
-            st.markdown(f'<div class="{user_row["档位提醒级别"]}-card">{user_row["档位提醒信息"]}</div>', unsafe_allow_html=True)
+        if '档位提醒级别' in staff_data and '档位提醒信息' in staff_data:
+            st.markdown(f'<div class="{staff_data["档位提醒级别"]}-card">{staff_data["档位提醒信息"]}</div>', unsafe_allow_html=True)
         
         # 季度绩效总览
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("季度总分", f"{user_row['总分']}分" if '总分' in user_row else "0分")
+            st.metric("季度总分", f"{staff_data['总分']}分" if '总分' in staff_data else "0分")
         with col2:
-            if '档位' in user_row and '季度目标档位' in user_row:
-                color = "#10b981" if user_row['档位'] <= user_row['季度目标档位'] else "#ef4444"
+            if '档位' in staff_data and '季度目标档位' in staff_data:
+                current_grade = staff_data['档位']
+                target_grade = staff_data['季度目标档位']
+                color = "#10b981" if current_grade <= target_grade else "#ef4444"
                 st.markdown(f"""
                 <div style="text-align: center;">
                     <div style="font-size: 0.9rem; color: #666;">季度档位</div>
-                    <div style="font-size: 2rem; font-weight: bold; color: {color};">{user_row['档位']}档</div>
-                    <div style="font-size: 0.8rem; color: #666;">目标：{user_row['季度目标档位']}档</div>
+                    <div style="font-size: 2rem; font-weight: bold; color: {color};">{current_grade}档</div>
+                    <div style="font-size: 0.8rem; color: #666;">目标：{target_grade}档</div>
                 </div>
                 """, unsafe_allow_html=True)
         with col3:
-            st.metric("季度月薪", f"¥{user_row['预估月薪']}" if '预估月薪' in user_row else "¥0")
+            st.metric("季度月薪", f"¥{staff_data['预估月薪']}" if '预估月薪' in staff_data else "¥0")
         with col4:
-            st.metric("所属地市", user_row['地市'])
+            st.metric("所属地市", staff_data['地市'])
         
         st.divider()
         
@@ -787,45 +868,53 @@ def staff_dashboard():
         
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            dist_score = user_row['分销得分'] if '分销得分' in user_row else 0
-            dist_avg = user_row['分销均季度'] if '分销均季度' in user_row else 0
+            dist_score = staff_data['分销得分'] if '分销得分' in staff_data else 0
+            dist_avg = staff_data['分销均季度'] if '分销均季度' in staff_data else 0
             st.metric("分销得分", f"{dist_score}/25")
             st.caption(f"均季度: {dist_avg}条")
         with col2:
-            recycle_score = user_row['条盒回收得分'] if '条盒回收得分' in user_row else 0
-            recycle_avg = user_row['条盒均季度'] if '条盒均季度' in user_row else 0
+            recycle_score = staff_data['条盒回收得分'] if '条盒回收得分' in staff_data else 0
+            recycle_avg = staff_data['条盒均季度'] if '条盒均季度' in staff_data else 0
             st.metric("条盒回收得分", f"{recycle_score}/35")
             st.caption(f"均季度: {recycle_avg}条")
         with col3:
-            core_score = user_row['核心户得分'] if '核心户得分' in user_row else 0
-            core_count = user_row['核心户数'] if '核心户数' in user_row else 0
+            core_score = staff_data['核心户得分'] if '核心户得分' in staff_data else 0
+            core_count = staff_data['核心户数'] if '核心户数' in staff_data else 0
             st.metric("核心户得分", f"{core_score}/20")
             st.caption(f"核心户数: {core_count}人")
         with col4:
-            comp_score = user_row['综合得分'] if '综合得分' in user_row else 0
+            comp_score = staff_data['综合得分'] if '综合得分' in staff_data else 0
             st.metric("综合得分", f"{comp_score}/20")
             st.caption("地市经理评分")
         
-        # 显示当前填报的数据
+        # 改进建议和提升档位提示
         st.divider()
-        st.subheader("📋 当前填报数据")
+        st.subheader("💡 提升建议")
         
-        quarter_months = get_quarter_months(st.session_state.current_quarter)
-        col_count = len(quarter_months)
-        
-        if col_count > 0:
-            cols = st.columns(col_count)
-            for i, month in enumerate(quarter_months):
-                with cols[i]:
-                    month_num = int(month.replace('月', ''))
-                    dist_col = f'分销_{month_num}月'
-                    recycle_col = f'条盒_{month_num}月'
-                    
-                    dist_value = user_row[dist_col] if dist_col in user_row else 0
-                    recycle_value = user_row[recycle_col] if recycle_col in user_row else 0
-                    
-                    st.metric(f"{month}分销", f"{dist_value}条")
-                    st.metric(f"{month}回收", f"{recycle_value}条")
+        if '档位' in staff_data and '季度目标档位' in staff_data:
+            current_grade = staff_data['档位']
+            target_grade = staff_data['季度目标档位']
+            
+            if current_grade > target_grade:
+                current_scores = {
+                    '总分': staff_data['总分'] if '总分' in staff_data else 0,
+                    '分销得分': staff_data['分销得分'] if '分销得分' in staff_data else 0,
+                    '条盒回收得分': staff_data['条盒回收得分'] if '条盒回收得分' in staff_data else 0,
+                    '核心户得分': staff_data['核心户得分'] if '核心户得分' in staff_data else 0,
+                    '综合得分': staff_data['综合得分'] if '综合得分' in staff_data else 0,
+                    '分销均季度': staff_data['分销均季度'] if '分销均季度' in staff_data else 0,
+                    '条盒均季度': staff_data['条盒均季度'] if '条盒均季度' in staff_data else 0,
+                }
+                
+                tips = get_grade_improvement_tips(current_scores, target_grade)
+                
+                st.markdown('<div class="tip-card">', unsafe_allow_html=True)
+                st.markdown("### 🎯 提升档位建议")
+                for tip in tips:
+                    st.write(f"• {tip}")
+                st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                st.success("✅ 恭喜！您已达到或超过目标档位，继续保持！")
     
     with tab2:
         st.subheader(f"📅 {st.session_state.current_quarter} 实时数据填报")
@@ -833,22 +922,21 @@ def staff_dashboard():
         # 获取季度月份
         quarter_months = get_quarter_months(st.session_state.current_quarter)
         
-        # 初始化表单数据
+        # 获取当前数据
         dist_values = []
         recycle_values = []
         
-        # 获取当前数据
         for month in quarter_months:
             month_num = int(month.replace('月', ''))
             dist_col = f'分销_{month_num}月'
             recycle_col = f'条盒_{month_num}月'
             
-            dist_values.append(user_row[dist_col] if dist_col in user_row else 0)
-            recycle_values.append(user_row[recycle_col] if recycle_col in user_row else 0)
+            dist_values.append(staff_data[dist_col] if dist_col in staff_data else 0)
+            recycle_values.append(staff_data[recycle_col] if recycle_col in staff_data else 0)
         
-        core_customers = user_row['核心户数'] if '核心户数' in user_row else 0
-        target_grade = user_row['季度目标档位'] if '季度目标档位' in user_row else 6
-        comp_score = user_row['综合评分'] if '综合评分' in user_row else 0
+        core_customers = staff_data['核心户数'] if '核心户数' in staff_data else 0
+        target_grade = staff_data['季度目标档位'] if '季度目标档位' in staff_data else 6
+        comp_score = staff_data['综合评分'] if '综合评分' in staff_data else 0
         
         # 实时计算当前得分
         current_score = calculate_realtime_score_for_staff(
@@ -936,24 +1024,27 @@ def staff_dashboard():
             submitted = st.form_submit_button("保存季度数据", type="primary")
             
             if submitted:
-                # 使用专用函数保存数据
-                success = save_staff_data(
-                    st.session_state.user_name,
-                    new_dist_values,
-                    new_recycle_values,
-                    new_core_customers,
-                    quarter_months
-                )
+                # 准备更新数据
+                updates = {}
+                
+                # 添加月度数据更新
+                for i, month in enumerate(quarter_months):
+                    month_num = int(month.replace('月', ''))
+                    dist_col = f'分销_{month_num}月'
+                    recycle_col = f'条盒_{month_num}月'
+                    
+                    updates[dist_col] = new_dist_values[i]
+                    updates[recycle_col] = new_recycle_values[i]
+                
+                # 添加核心户数更新
+                updates['核心户数'] = new_core_customers
+                
+                # 执行更新
+                success = update_staff_data(st.session_state.user_name, updates)
                 
                 if success:
-                    st.success("✅ 季度数据保存成功！数据已同步到系统中。")
-                    st.markdown("""
-                    **数据已同步：**
-                    - ✅ 您的数据已保存到主数据库
-                    - ✅ 地市经理可以立即查看您的数据
-                    - ✅ 管理员可以立即查看您的数据
-                    - ✅ 系统已重新计算您的绩效得分
-                    """)
+                    st.success("✅ 季度数据保存成功！")
+                    st.info("数据已同步到系统中，地市经理和管理员可以立即查看。")
                     
                     # 显示保存的数据
                     with st.expander("查看保存的数据详情", expanded=True):
@@ -961,51 +1052,13 @@ def staff_dashboard():
                             st.write(f"{month}: 分销 {new_dist_values[i]}条, 回收 {new_recycle_values[i]}条")
                         st.write(f"核心户数: {new_core_customers}人")
                     
+                    # 设置同步标志
+                    st.session_state.data_sync_flag = True
+                    
                     # 自动刷新页面
                     st.rerun()
                 else:
                     st.error("❌ 保存数据失败，请重试")
-    
-    with tab3:
-        st.subheader("🧮 得分与工资计算器")
-        
-        with st.container():
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("### 输入模拟数据")
-                target_grade = st.selectbox("目标档位", list(range(1, 11)), index=5, key="calc_target_grade")
-                dist_q = st.number_input("分销季度总量（条）", min_value=0, value=900, key="calc_dist_q")
-                recycle_q = st.number_input("条盒回收季度总量（条）", min_value=0, value=1200, key="calc_recycle_q")
-                core_customers = st.number_input("核心户数", min_value=0, value=28, key="calc_core_customers")
-                comp_score = st.slider("综合评分（0-20）", 0, 20, 16, key="calc_comp_score")
-            
-            with col2:
-                # 计算得分
-                dist_score = calculate_distribution_score(dist_q)
-                recycle_score = calculate_recycling_score(recycle_q)
-                core_score = calculate_core_customer_score(core_customers)
-                total_score = dist_score + recycle_score + core_score + comp_score
-                grade, salary = calculate_salary_grade(total_score)
-                
-                # 检查档位
-                warning_level, warning_msg = check_grade_warning(grade, target_grade)
-                
-                st.markdown(f"""
-                <div class="{warning_level}-card">
-                    <h4>{warning_msg}</h4>
-                </div>
-                <div class="data-card" style="margin-top: 1rem;">
-                    <h4>各项得分：</h4>
-                    <p>📦 分销得分：<b>{dist_score}/25</b></p>
-                    <p>📊 条盒回收得分：<b>{recycle_score}/35</b></p>
-                    <p>👥 核心户得分：<b>{core_score}/20</b></p>
-                    <p>⭐ 综合得分：<b>{comp_score}/20</b></p>
-                    <hr>
-                    <h3>总分：<span style="color:#4f46e5">{total_score}分</span></h3>
-                    <h4>档位：{grade}档 (目标：{target_grade}档)</h4>
-                    <h2>预估季度月薪：<span style="color:#10b981">¥{salary}</span></h2>
-                </div>
-                """, unsafe_allow_html=True)
 
 # ========== 地市经理页面 ==========
 def manager_dashboard():
@@ -1014,7 +1067,7 @@ def manager_dashboard():
     # 获取地市经理管理的地市
     managed_city = st.session_state.current_city
     
-    # 筛选该地市的事务员数据
+    # 获取该地市的数据
     city_data = st.session_state.performance_data[
         st.session_state.performance_data['地市'] == managed_city
     ]
@@ -1025,28 +1078,8 @@ def manager_dashboard():
     
     st.success(f"您正在管理：{managed_city}地区，共{len(city_data)}位事务员")
     
-    # 显示最近的数据变更记录
-    show_recent_changes = False
-    if st.session_state.data_history:
-        recent_changes = []
-        for staff_name, records in st.session_state.data_history.items():
-            # 只显示本地区的事务员
-            if staff_name in city_data['事务员'].values:
-                if records:
-                    latest_record = records[-1]
-                    recent_changes.append({
-                        '事务员': staff_name,
-                        '时间': latest_record['时间'],
-                        '操作': latest_record['操作']
-                    })
-        
-        if recent_changes:
-            show_recent_changes = True
-            st.markdown('<div class="data-changed">', unsafe_allow_html=True)
-            st.subheader("📝 最近数据变更记录")
-            for change in recent_changes[-3:]:  # 只显示最近3条
-                st.write(f"**{change['事务员']}** - {change['时间']} - {change['操作']}")
-            st.markdown('</div>', unsafe_allow_html=True)
+    # 显示数据验证
+    st.info(f"✅ 数据已同步，以下是事务员填报的最新数据")
     
     # 创建标签页
     tab1, tab2, tab3 = st.tabs(["👥 事务员管理", "📊 地区分析", "📈 绩效考核"])
@@ -1054,17 +1087,36 @@ def manager_dashboard():
     with tab1:
         st.subheader(f"{managed_city}地区事务员列表")
         
-        # 获取当前季度数据（只显示相关列）
+        # 获取当前季度数据
         current_city_data = get_current_quarter_data(city_data, st.session_state.current_quarter)
         
-        if current_city_data.empty:
-            st.warning("没有找到当前季度的数据")
-            return
+        # 显示具体的事务员数据
+        for idx, row in current_city_data.iterrows():
+            with st.expander(f"{row['事务员']} - 当前数据", expanded=False):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**分销数据：**")
+                    month_range = get_current_quarter_month_range()
+                    for month_num in month_range:
+                        dist_col = f'分销_{month_num}月'
+                        if dist_col in row:
+                            st.write(f"{month_num}月: {row[dist_col]}条")
+                
+                with col2:
+                    st.write("**条盒回收数据：**")
+                    for month_num in month_range:
+                        recycle_col = f'条盒_{month_num}月'
+                        if recycle_col in row:
+                            st.write(f"{month_num}月: {row[recycle_col]}条")
+                
+                st.write(f"**核心户数：** {row['核心户数'] if '核心户数' in row else 0}人")
+                st.write(f"**综合评分：** {row['综合评分'] if '综合评分' in row else 0}分")
+                st.write(f"**目标档位：** {row['季度目标档位'] if '季度目标档位' in row else 6}档")
         
-        # 显示数据验证
-        st.info(f"✅ 数据已同步，共{len(current_city_data)}位事务员的数据")
+        # 数据编辑界面
+        st.subheader("编辑事务员数据")
         
-        # 显示数据编辑界面
         edited_df = st.data_editor(
             current_city_data,
             column_config={
@@ -1099,51 +1151,23 @@ def manager_dashboard():
         
         if data_diff:
             st.markdown('<div class="data-changed">📝 检测到数据修改，请保存以应用更改</div>', unsafe_allow_html=True)
-            
-            # 显示具体修改
-            with st.expander("查看具体修改", expanded=False):
-                for idx, row in edited_df.iterrows():
-                    original_row = current_city_data.loc[idx]
-                    changes = []
-                    
-                    for col in edited_df.columns:
-                        if col in original_row and row[col] != original_row[col]:
-                            changes.append(f"{col}: {original_row[col]} → {row[col]}")
-                    
-                    if changes:
-                        staff_name = row['事务员'] if '事务员' in row else f"行{idx+1}"
-                        st.write(f"**{staff_name}** 的修改：")
-                        for change in changes:
-                            st.write(f"  - {change}")
         
         if st.button("保存修改", type="primary", use_container_width=True, key="save_manager_changes_btn"):
-            # 保存修改到主数据
+            # 保存修改
             for idx, row in edited_df.iterrows():
                 # 找到原始数据中的对应行
                 original_idx = city_data.index[city_data['行号'] == row['行号']].tolist()
                 if original_idx:
                     original_idx = original_idx[0]
                     
-                    # 更新综合评分
-                    if '综合评分' in row:
-                        old_score = st.session_state.performance_data.at[original_idx, '综合评分']
-                        new_score = row['综合评分']
-                        if old_score != new_score:
-                            st.session_state.performance_data.at[original_idx, '综合评分'] = new_score
+                    # 准备更新数据
+                    updates = {}
                     
-                    # 更新目标档位
-                    if '季度目标档位' in row:
-                        old_target = st.session_state.performance_data.at[original_idx, '季度目标档位']
-                        new_target = row['季度目标档位']
-                        if old_target != new_target:
-                            st.session_state.performance_data.at[original_idx, '季度目标档位'] = new_target
-                    
-                    # 更新核心户数
-                    if '核心户数' in row:
-                        old_core = st.session_state.performance_data.at[original_idx, '核心户数']
-                        new_core = row['核心户数']
-                        if old_core != new_core:
-                            st.session_state.performance_data.at[original_idx, '核心户数'] = new_core
+                    # 更新可编辑字段
+                    editable_fields = ['综合评分', '季度目标档位', '核心户数']
+                    for field in editable_fields:
+                        if field in row:
+                            updates[field] = row[field]
                     
                     # 更新月度数据
                     month_range = get_current_quarter_month_range()
@@ -1152,33 +1176,13 @@ def manager_dashboard():
                         recycle_col = f'条盒_{month_num}月'
                         
                         if dist_col in row:
-                            old_dist = st.session_state.performance_data.at[original_idx, dist_col]
-                            new_dist = row[dist_col]
-                            if old_dist != new_dist:
-                                st.session_state.performance_data.at[original_idx, dist_col] = new_dist
-                        
+                            updates[dist_col] = row[dist_col]
                         if recycle_col in row:
-                            old_recycle = st.session_state.performance_data.at[original_idx, recycle_col]
-                            new_recycle = row[recycle_col]
-                            if old_recycle != new_recycle:
-                                st.session_state.performance_data.at[original_idx, recycle_col] = new_recycle
-            
-            # 重新计算绩效
-            st.session_state.performance_data = calculate_performance(
-                st.session_state.performance_data, 
-                st.session_state.current_quarter
-            )
-            
-            # 记录数据变更
-            if st.session_state.user_name not in st.session_state.data_history:
-                st.session_state.data_history[st.session_state.user_name] = []
-            
-            st.session_state.data_history[st.session_state.user_name].append({
-                '时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                '操作': '地市经理修改数据',
-                '修改地区': managed_city,
-                '修改人数': len(edited_df)
-            })
+                            updates[recycle_col] = row[recycle_col]
+                    
+                    # 执行更新
+                    staff_name = row['事务员']
+                    update_staff_data(staff_name, updates)
             
             # 设置同步标志
             st.session_state.data_sync_flag = True
@@ -1189,11 +1193,6 @@ def manager_dashboard():
 # ========== 管理员页面 ==========
 def admin_dashboard():
     st.markdown('<h2 class="main-header">👑 管理员控制台</h2>', unsafe_allow_html=True)
-    
-    # 显示数据同步状态
-    if st.session_state.get('data_sync_flag', False):
-        st.markdown('<div class="sync-status">✅ 数据已同步，所有角色都可以看到最新数据</div>', unsafe_allow_html=True)
-        st.session_state.data_sync_flag = False
     
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 数据管理", "📊 全局分析", "🔄 季度管理", "📤 数据导入导出", "⚙️ 系统设置"])
     
@@ -1233,53 +1232,28 @@ def admin_dashboard():
         if selected_city != "全部":
             display_data = display_data[display_data['地市'] == selected_city]
         
-        # 显示最近数据变更
-        if st.session_state.data_history:
-            with st.expander("📝 最近数据变更记录", expanded=False):
-                changes_count = 0
-                for user_name, records in list(st.session_state.data_history.items())[-10:]:  # 只显示最近10条
-                    if records:
-                        latest_record = records[-1]
-                        st.write(f"**{user_name}** - {latest_record['时间']}")
-                        st.write(f"操作：{latest_record['操作']}")
-                        
-                        if '分销数据' in latest_record:
-                            st.write(f"分销数据：{latest_record['分销数据']}")
-                        if '地区' in latest_record:
-                            st.write(f"地区：{latest_record['地区']}")
-                        if '修改人数' in latest_record:
-                            st.write(f"修改人数：{latest_record['修改人数']}")
-                        
-                        st.divider()
-                        changes_count += 1
-                
-                if changes_count > 0:
-                    st.info(f"共显示{changes_count}条最近的数据变更记录")
-        
-        # 显示庞雷的示例数据（特别验证）
-        if "庞雷" in st.session_state.performance_data['事务员'].values:
-            pang_lei_data = st.session_state.performance_data[
-                st.session_state.performance_data['事务员'] == "庞雷"
-            ].iloc[0]
+        # 显示庞雷的数据示例（用于验证）
+        if "庞雷" in display_data['事务员'].values:
+            pang_lei_data = display_data[display_data['事务员'] == "庞雷"].iloc[0]
             
-            with st.expander("🔍 验证：庞雷的数据（示例）", expanded=False):
-                st.write("**庞雷的当前季度数据：**")
+            with st.expander("🔍 验证：庞雷的数据（示例）", expanded=True):
+                st.write("**当前季度数据：**")
                 quarter_months = get_quarter_months(st.session_state.current_quarter)
                 
-                for month in quarter_months:
-                    month_num = int(month.replace('月', ''))
-                    dist_col = f'分销_{month_num}月'
-                    recycle_col = f'条盒_{month_num}月'
-                    
-                    if dist_col in pang_lei_data:
-                        st.write(f"{month}分销：{pang_lei_data[dist_col]}条")
-                    if recycle_col in pang_lei_data:
-                        st.write(f"{month}回收：{pang_lei_data[recycle_col]}条")
+                cols = st.columns(len(quarter_months))
+                for i, month in enumerate(quarter_months):
+                    with cols[i]:
+                        month_num = int(month.replace('月', ''))
+                        dist_col = f'分销_{month_num}月'
+                        recycle_col = f'条盒_{month_num}月'
+                        
+                        if dist_col in pang_lei_data:
+                            st.metric(f"{month}分销", f"{pang_lei_data[dist_col]}条")
+                        if recycle_col in pang_lei_data:
+                            st.metric(f"{month}回收", f"{pang_lei_data[recycle_col]}条")
                 
-                if '核心户数' in pang_lei_data:
-                    st.write(f"核心户数：{pang_lei_data['核心户数']}人")
-                if '综合评分' in pang_lei_data:
-                    st.write(f"综合评分：{pang_lei_data['综合评分']}分")
+                st.write(f"**核心户数：** {pang_lei_data['核心户数'] if '核心户数' in pang_lei_data else 0}人")
+                st.write(f"**综合评分：** {pang_lei_data['综合评分'] if '综合评分' in pang_lei_data else 0}分")
         
         # 显示数据编辑界面
         st.write(f"显示数据：{len(display_data)} 行")
@@ -1324,12 +1298,14 @@ def admin_dashboard():
                     if original_idx:
                         original_idx = original_idx[0]
                         
+                        # 准备更新数据
+                        updates = {}
+                        
                         # 更新可编辑字段
                         editable_fields = ['综合评分', '季度目标档位', '核心户数', '备注']
-                        
                         for field in editable_fields:
                             if field in row and field in st.session_state.performance_data.columns:
-                                st.session_state.performance_data.at[original_idx, field] = row[field]
+                                updates[field] = row[field]
                         
                         # 更新月度数据
                         month_range = get_current_quarter_month_range()
@@ -1338,39 +1314,18 @@ def admin_dashboard():
                             recycle_col = f'条盒_{month_num}月'
                             
                             if dist_col in row:
-                                st.session_state.performance_data.at[original_idx, dist_col] = row[dist_col]
+                                updates[dist_col] = row[dist_col]
                             if recycle_col in row:
-                                st.session_state.performance_data.at[original_idx, recycle_col] = row[recycle_col]
-                
-                # 重新计算绩效
-                st.session_state.performance_data = calculate_performance(
-                    st.session_state.performance_data, 
-                    st.session_state.current_quarter
-                )
-                
-                # 记录操作
-                if st.session_state.user_name not in st.session_state.data_history:
-                    st.session_state.data_history[st.session_state.user_name] = []
-                
-                st.session_state.data_history[st.session_state.user_name].append({
-                    '时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    '操作': '管理员修改数据',
-                    '修改行数': len(edited_df)
-                })
+                                updates[recycle_col] = row[recycle_col]
+                        
+                        # 执行更新
+                        staff_name = row['事务员']
+                        update_staff_data(staff_name, updates)
                 
                 # 设置同步标志
                 st.session_state.data_sync_flag = True
                 
                 st.success("✅ 数据保存成功！")
-                st.rerun()
-        
-        with col2:
-            if st.button("重新计算绩效", type="secondary", use_container_width=True, key="recalculate_btn"):
-                st.session_state.performance_data = calculate_performance(
-                    st.session_state.performance_data, 
-                    st.session_state.current_quarter
-                )
-                st.success("✅ 绩效重新计算完成！")
                 st.rerun()
 
 # ========== 主程序 ==========
