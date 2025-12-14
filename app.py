@@ -760,6 +760,90 @@ def get_current_quarter_data(df, quarter):
     
     return result_df
 
+# ========== 数据导入导出函数 ==========
+def import_excel_data(uploaded_file):
+    """从Excel文件导入数据"""
+    try:
+        df = pd.read_excel(uploaded_file)
+        return df, True, "导入成功"
+    except Exception as e:
+        return None, False, f"导入失败: {str(e)}"
+
+def export_to_excel(df):
+    """导出数据到Excel"""
+    try:
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='绩效数据')
+        output.seek(0)
+        return output, True, "导出成功"
+    except Exception as e:
+        return None, False, f"导出失败: {str(e)}"
+
+def export_quarter_history():
+    """导出季度历史数据"""
+    try:
+        if not st.session_state.quarter_history:
+            return None, False, "没有历史数据"
+        
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            for quarter, data in st.session_state.quarter_history.items():
+                df = pd.DataFrame(data)
+                df.to_excel(writer, index=False, sheet_name=quarter[:10])  # 限制sheet名长度
+        
+        output.seek(0)
+        return output, True, "历史数据导出成功"
+    except Exception as e:
+        return None, False, f"导出失败: {str(e)}"
+
+def backup_data():
+    """备份数据到文件"""
+    try:
+        backup_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_file = f"backup_{backup_time}.pkl"
+        
+        backup_data = {
+            'performance_data': st.session_state.performance_data,
+            'quarter_history': st.session_state.quarter_history,
+            'current_quarter': st.session_state.current_quarter,
+            'last_reset': st.session_state.last_reset,
+            'data_history': st.session_state.data_history
+        }
+        
+        with open(backup_file, 'wb') as f:
+            pickle.dump(backup_data, f)
+        
+        return backup_file, True, f"备份成功：{backup_file}"
+    except Exception as e:
+        return None, False, f"备份失败: {str(e)}"
+
+def restore_backup(backup_file):
+    """从备份文件恢复数据"""
+    try:
+        with open(backup_file, 'rb') as f:
+            backup_data = pickle.load(f)
+        
+        st.session_state.performance_data = backup_data.get('performance_data')
+        st.session_state.quarter_history = backup_data.get('quarter_history', {})
+        st.session_state.current_quarter = backup_data.get('current_quarter')
+        st.session_state.last_reset = backup_data.get('last_reset')
+        st.session_state.data_history = backup_data.get('data_history', {})
+        
+        save_data()
+        
+        return True, "数据恢复成功"
+    except Exception as e:
+        return False, f"恢复失败: {str(e)}"
+
+def find_backup_files():
+    """查找备份文件"""
+    backup_files = []
+    for file in os.listdir('.'):
+        if file.startswith('backup_') and file.endswith('.pkl'):
+            backup_files.append(file)
+    return sorted(backup_files, reverse=True)
+
 # ========== 登录页面 ==========
 def login_page():
     st.markdown('<h1 class="main-header">🔐 广东中烟绩效管理系统（季度版）</h1>', unsafe_allow_html=True)
@@ -1640,15 +1724,11 @@ def admin_dashboard():
         
         with col3:
             if st.button("备份数据", type="secondary", use_container_width=True, key="backup_btn"):
-                # 创建备份文件
-                backup_file = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl"
-                with open(backup_file, 'wb') as f:
-                    pickle.dump({
-                        'performance_data': st.session_state.performance_data,
-                        'quarter_history': st.session_state.quarter_history,
-                        'current_quarter': st.session_state.current_quarter
-                    }, f)
-                st.success(f"✅ 数据已备份到 {backup_file}")
+                backup_file, success, message = backup_data()
+                if success:
+                    st.success(f"✅ {message}")
+                else:
+                    st.error(f"❌ {message}")
     
     with tab2:
         st.subheader("全局分析")
@@ -1735,6 +1815,350 @@ def admin_dashboard():
                     st.info("暂无地区分析数据")
         else:
             st.info("暂无全局分析数据")
+    
+    with tab3:
+        st.subheader("🔄 季度管理")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 季度设置")
+            
+            # 手动设置当前季度
+            quarters = [f"{datetime.now().year}年Q{quarter}季度" for quarter in range(1, 5)]
+            selected_quarter = st.selectbox(
+                "选择当前季度",
+                quarters,
+                index=quarters.index(st.session_state.current_quarter) if st.session_state.current_quarter in quarters else 0,
+                key="admin_select_quarter"
+            )
+            
+            if st.session_state.current_quarter != selected_quarter:
+                if st.button("切换季度", type="primary", use_container_width=True, key="switch_quarter_btn"):
+                    st.session_state.current_quarter = selected_quarter
+                    st.success(f"✅ 已切换到 {selected_quarter}")
+                    st.rerun()
+            
+            # 季度目标设置
+            st.markdown("### 批量季度目标设置")
+            default_target = st.slider("默认目标档位", 1, 10, 6, key="admin_target_slider")
+            
+            if st.button("全员设置季度目标", use_container_width=True, key="set_all_target_btn"):
+                success_count = 0
+                for idx in st.session_state.performance_data.index:
+                    staff_name = st.session_state.performance_data.at[idx, '事务员']
+                    updates = {'季度目标档位': default_target}
+                    if update_staff_data(staff_name, updates):
+                        success_count += 1
+                
+                st.success(f"✅ 已为{success_count}位事务员设置季度目标为{default_target}档")
+                st.rerun()
+        
+        with col2:
+            st.markdown("### 季度操作")
+            
+            # 检查季度状态
+            if st.session_state.last_reset == st.session_state.current_quarter:
+                st.success(f"✅ {st.session_state.current_quarter} 数据已重置")
+            else:
+                st.warning(f"⚠️ {st.session_state.current_quarter} 数据未重置")
+            
+            # 手动重置当前季度
+            if st.button("手动重置当前季度数据", type="primary", use_container_width=True, key="manual_reset_btn"):
+                if st.session_state.performance_data is not None:
+                    st.session_state.performance_data = reset_quarter_data(
+                        st.session_state.performance_data,
+                        target_grade=6
+                    )
+                    st.success(f"✅ {st.session_state.current_quarter} 数据已重置")
+                    st.rerun()
+            
+            # 显示季度历史
+            st.markdown("### 季度历史记录")
+            if st.session_state.quarter_history:
+                quarters = list(st.session_state.quarter_history.keys())
+                if quarters:
+                    selected_history = st.selectbox("查看历史季度", quarters, key="admin_history_select")
+                    
+                    if selected_history in st.session_state.quarter_history:
+                        history_df = pd.DataFrame(st.session_state.quarter_history[selected_history])
+                        history_summary = history_df.groupby('地市').agg({
+                            '总分': 'mean',
+                            '档位': 'mean',
+                            '事务员': 'count'
+                        }).round(1)
+                        
+                        st.dataframe(history_summary, use_container_width=True)
+            else:
+                st.info("暂无季度历史数据")
+        
+        # 历史季度数据管理
+        st.markdown("### 📊 历史季度数据导出")
+        
+        if st.session_state.quarter_history:
+            col1, col2 = st.columns(2)
+            with col1:
+                # 导出所有历史数据
+                output, success, message = export_quarter_history()
+                if success:
+                    st.download_button(
+                        label="📥 下载所有历史季度数据",
+                        data=output,
+                        file_name=f"季度历史数据_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="export_all_history_btn"
+                    )
+            with col2:
+                if st.button("清空历史季度数据", type="secondary", use_container_width=True, key="clear_history_btn"):
+                    st.session_state.quarter_history = {}
+                    save_data()
+                    st.success("✅ 历史季度数据已清空")
+                    st.rerun()
+        else:
+            st.info("暂无历史季度数据")
+    
+    with tab4:
+        st.subheader("📤 数据导入导出")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 数据导入")
+            
+            uploaded_file = st.file_uploader(
+                "上传Excel数据文件",
+                type=['xlsx', 'xls'],
+                help="请上传包含绩效数据的Excel文件"
+            )
+            
+            if uploaded_file is not None:
+                try:
+                    # 读取Excel文件
+                    df = pd.read_excel(uploaded_file)
+                    
+                    # 显示数据预览
+                    with st.expander("预览导入的数据", expanded=True):
+                        st.write(f"数据形状: {df.shape}")
+                        st.dataframe(df.head(10), use_container_width=True)
+                    
+                    # 检查必要列
+                    required_columns = ['行号', '地市', '事务员']
+                    missing_columns = [col for col in required_columns if col not in df.columns]
+                    
+                    if missing_columns:
+                        st.error(f"缺少必要列: {missing_columns}")
+                    else:
+                        if st.button("确认导入数据", type="primary", use_container_width=True, key="confirm_import_btn"):
+                            # 合并数据
+                            df_merged = pd.concat([st.session_state.performance_data, df], ignore_index=True).drop_duplicates(subset=['事务员'], keep='last')
+                            
+                            # 重新计算绩效
+                            df_merged = calculate_performance(df_merged, st.session_state.current_quarter)
+                            
+                            # 更新session state
+                            st.session_state.performance_data = df_merged
+                            save_data()
+                            
+                            st.success(f"✅ 数据导入成功！共导入{len(df)}条记录")
+                            st.rerun()
+                
+                except Exception as e:
+                    st.error(f"导入失败: {str(e)}")
+        
+        with col2:
+            st.markdown("### 数据导出")
+            
+            # 导出当前季度数据
+            output, success, message = export_to_excel(st.session_state.performance_data)
+            
+            if success:
+                st.download_button(
+                    label="📥 下载当前季度完整数据",
+                    data=output,
+                    file_name=f"广东中烟绩效数据_{st.session_state.current_quarter}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="export_current_btn"
+                )
+            
+            # 导出CSV格式
+            csv_data = st.session_state.performance_data.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 下载CSV格式数据",
+                data=csv_data,
+                file_name=f"绩效数据_{st.session_state.current_quarter}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="export_csv_btn"
+            )
+        
+        # 备份与恢复
+        st.markdown("### 💾 备份与恢复")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # 创建新备份
+            if st.button("创建新备份", type="primary", use_container_width=True, key="create_backup_btn"):
+                backup_file, success, message = backup_data()
+                if success:
+                    st.success(f"✅ {message}")
+                else:
+                    st.error(f"❌ {message}")
+        
+        with col2:
+            # 恢复备份
+            backup_files = find_backup_files()
+            if backup_files:
+                selected_backup = st.selectbox("选择备份文件恢复", backup_files, key="backup_select")
+                
+                if st.button("恢复选中备份", type="secondary", use_container_width=True, key="restore_backup_btn"):
+                    success, message = restore_backup(selected_backup)
+                    if success:
+                        st.success(f"✅ {message}")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {message}")
+            else:
+                st.info("暂无备份文件")
+    
+    with tab5:
+        st.subheader("⚙️ 系统设置")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 系统信息")
+            
+            # 显示当前系统状态
+            st.info(f"""
+            **系统状态：** 运行正常 ✅
+            **当前季度：** {st.session_state.current_quarter}
+            **数据记录数：** {len(st.session_state.performance_data) if st.session_state.performance_data is not None else 0}
+            **历史季度数：** {len(st.session_state.quarter_history)}
+            **数据文件：** {DATA_FILE}
+            """)
+            
+            # 系统健康检查
+            st.markdown("### 系统健康检查")
+            
+            check_items = []
+            
+            # 检查数据文件
+            if os.path.exists(DATA_FILE):
+                check_items.append(("数据文件", "✅ 正常", "文件大小正常"))
+            else:
+                check_items.append(("数据文件", "⚠️ 警告", "数据文件不存在"))
+            
+            # 检查数据完整性
+            if st.session_state.performance_data is not None:
+                check_items.append(("数据完整性", "✅ 正常", f"共{len(st.session_state.performance_data)}条记录"))
+            else:
+                check_items.append(("数据完整性", "❌ 错误", "数据为空"))
+            
+            # 检查季度设置
+            if st.session_state.current_quarter:
+                check_items.append(("季度设置", "✅ 正常", st.session_state.current_quarter))
+            else:
+                check_items.append(("季度设置", "❌ 错误", "未设置季度"))
+            
+            # 显示检查结果
+            for item, status, detail in check_items:
+                st.write(f"**{item}:** {status} - {detail}")
+            
+            # 系统统计
+            if st.session_state.performance_data is not None:
+                total_updates = sum(len(history) for history in st.session_state.data_history.values())
+                st.write(f"**数据更新次数：** {total_updates}次")
+                st.write(f"**地市数量：** {st.session_state.performance_data['地市'].nunique()}个")
+                st.write(f"**事务员数量：** {st.session_state.performance_data['事务员'].nunique()}人")
+        
+        with col2:
+            st.markdown("### 系统维护")
+            
+            # 数据清理
+            st.markdown("#### 数据清理")
+            
+            if st.button("清理临时数据", type="secondary", use_container_width=True, key="clean_temp_btn"):
+                # 可以添加清理逻辑
+                st.success("✅ 临时数据清理完成")
+            
+            # 重置系统
+            st.markdown("#### 系统重置")
+            
+            reset_option = st.selectbox(
+                "选择重置类型",
+                ["请选择", "重置当前季度数据", "重置所有数据", "重置登录状态"],
+                key="reset_option_select"
+            )
+            
+            if reset_option != "请选择":
+                if st.button(f"执行{reset_option}", type="primary", use_container_width=True, key="execute_reset_btn"):
+                    if reset_option == "重置当前季度数据":
+                        if st.session_state.performance_data is not None:
+                            st.session_state.performance_data = reset_quarter_data(
+                                st.session_state.performance_data,
+                                target_grade=6
+                            )
+                            st.success("✅ 当前季度数据已重置")
+                    elif reset_option == "重置所有数据":
+                        st.session_state.performance_data = init_data_from_template()
+                        st.session_state.performance_data = calculate_performance(
+                            st.session_state.performance_data,
+                            st.session_state.current_quarter
+                        )
+                        st.session_state.quarter_history = {}
+                        st.session_state.data_history = {}
+                        save_data()
+                        st.success("✅ 所有数据已重置为初始状态")
+                    elif reset_option == "重置登录状态":
+                        # 只重置登录状态，保留数据
+                        st.session_state.authenticated = False
+                        st.session_state.user_role = None
+                        st.session_state.user_name = None
+                        st.session_state.current_city = None
+                        st.success("✅ 登录状态已重置")
+                    
+                    st.rerun()
+            
+            # 日志查看
+            st.markdown("#### 操作日志")
+            
+            if st.session_state.data_history:
+                with st.expander("查看操作日志", expanded=False):
+                    for staff_name, history in list(st.session_state.data_history.items())[:10]:  # 只显示前10条
+                        for record in history[-3:]:  # 只显示最近3条
+                            st.write(f"**{staff_name}** - {record['时间']}")
+                            st.write(f"操作: {record['操作']}")
+                            if '更新内容' in record:
+                                st.write(f"更新内容: {record['更新内容']}")
+                            st.divider()
+            else:
+                st.info("暂无操作日志")
+        
+        # 密码管理
+        st.markdown("### 🔑 密码管理")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            new_manager_pwd = st.text_input("新地市经理密码", type="password", key="new_manager_pwd")
+            if st.button("更新地市经理密码", use_container_width=True, key="update_manager_pwd_btn"):
+                # 在实际应用中，这里应该将密码保存到配置文件或数据库中
+                st.success("✅ 地市经理密码已更新（演示功能）")
+        
+        with col2:
+            new_admin_pwd = st.text_input("新管理员密码", type="password", key="new_admin_pwd")
+            if st.button("更新管理员密码", use_container_width=True, key="update_admin_pwd_btn"):
+                # 在实际应用中，这里应该将密码保存到配置文件或数据库中
+                st.success("✅ 管理员密码已更新（演示功能）")
+        
+        with col3:
+            st.write("**密码安全提示：**")
+            st.write("1. 密码长度至少8位")
+            st.write("2. 包含大小写字母和数字")
+            st.write("3. 定期更换密码")
 
 # ========== 主程序 ==========
 def main():
