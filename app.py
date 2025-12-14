@@ -848,10 +848,6 @@ def find_backup_files():
 def login_page():
     st.markdown('<h1 class="main-header">🔐 广东中烟绩效管理系统（季度版）</h1>', unsafe_allow_html=True)
     
-    # 显示数据状态
-    if os.path.exists(DATA_FILE):
-        st.markdown(f'<div class="sync-status">💾 数据已从本地文件加载</div>', unsafe_allow_html=True)
-    
     # 初始化当前季度
     if st.session_state.current_quarter is None:
         st.session_state.current_quarter = get_current_quarter()
@@ -893,7 +889,6 @@ def login_page():
     st.markdown(f"""
     <div style="text-align: center; margin-bottom: 2rem;">
         <span class="quarter-badge {q_class}">当前季度：{st.session_state.current_quarter}</span>
-        <span style="color: #666; font-size: 0.9rem;">工资按季度结算，每季度重置数据</span>
     </div>
     """, unsafe_allow_html=True)
     
@@ -947,43 +942,6 @@ def login_page():
                         st.error("密码错误！")
             
             st.markdown('</div>', unsafe_allow_html=True)
-    
-    # 使用说明
-    with st.expander("📖 系统使用说明（季度版）", expanded=False):
-        st.markdown(f"""
-        ### 当前季度：{st.session_state.current_quarter}
-        
-        **📅 季度结算规则：**
-        1. 工资按季度计算和发放
-        2. 每季度结束后数据自动重置
-        3. 系统会记录每个季度的历史数据
-        
-        **🎯 实时评分系统：**
-        - 事务员填写数据时，实时显示预估得分和档位
-        - 绿色✅：超过目标档位
-        - 黄色📊：达到目标档位  
-        - 红色⚠️：低于目标档位（需要改进）
-        
-        **👤 各角色功能：**
-        - 事务员：填报月度数据，实时查看预估成绩和提醒
-        - 地市经理：查看和修改本地区数据，进行综合评分
-        - 管理员：季度管理、数据重置、系统设置
-        
-        **🔑 默认密码：**
-        - 事务员：直接选择姓名（无需密码）
-        - 地市经理：manager123
-        - 管理员：admin123
-        
-        **💾 数据存储：**
-        - 所有数据都保存在本地文件中
-        - 每次数据更新都会自动保存
-        - 关闭浏览器后数据不会丢失
-        
-        **📝 重要提示：**
-        - Q4季度（10-12月）按4个月的数据折算为季度平均值
-        - 每个季度开始时会自动重置数据
-        - 历史季度数据可以在"历史季度"页面查看
-        """)
 
 # ========== 事务员个人页面 ==========
 def staff_dashboard():
